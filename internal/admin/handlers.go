@@ -80,6 +80,9 @@ func (h *Handler) Mount(r chi.Router) {
 		pr.Get("/admin/api/users", h.handleListUsers)
 		pr.Post("/admin/api/users", h.handleCreateUser)
 		pr.Delete("/admin/api/users/{id}", h.handleDeleteUser)
+		pr.Get("/admin/api/users/{id}/accounts", h.handleListUserAccounts)
+		pr.Put("/admin/api/users/{id}/accounts/{serverId}", h.handleSetUserAccount)
+		pr.Delete("/admin/api/users/{id}/accounts/{serverId}", h.handleDeleteUserAccount)
 
 		pr.Get("/admin/api/servers", h.handleListServers)
 		pr.Post("/admin/api/servers", h.handleCreateServer)
@@ -136,11 +139,20 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type userUpstreamAccountDTO struct {
+	ServerID       string    `json:"serverId"`
+	ServerName     string    `json:"serverName,omitempty"`
+	RemoteUsername string    `json:"remoteUsername"`
+	RemoteUserID   string    `json:"remoteUserId,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
+}
+
 type adminUserDTO struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	IsAdmin   bool      `json:"isAdmin"`
-	CreatedAt time.Time `json:"createdAt,omitempty"`
+	ID               string                   `json:"id"`
+	Username         string                   `json:"username"`
+	IsAdmin          bool                     `json:"isAdmin"`
+	CreatedAt        time.Time                `json:"createdAt,omitempty"`
+	UpstreamAccounts []userUpstreamAccountDTO `json:"upstreamAccounts,omitempty"`
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -355,20 +367,46 @@ type createUserRequest struct {
 }
 
 func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.db.ListUsers(r.Context())
+	ctx := r.Context()
+	users, err := h.db.ListUsers(ctx)
 	if err != nil {
 		h.logger.Error("list users failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "Failed to list users")
 		return
 	}
 
+	serverNameByID := make(map[string]string)
+	if h.pool != nil {
+		if servers, err := h.pool.ListServers(ctx); err == nil {
+			for _, s := range servers {
+				serverNameByID[s.ID] = s.Name
+			}
+		}
+	}
+
+	accountsByUser := make(map[string][]userUpstreamAccountDTO)
+	if h.pool != nil {
+		if allAccounts, err := h.pool.ListAllUserUpstreamAccounts(ctx); err == nil {
+			for _, acc := range allAccounts {
+				accountsByUser[acc.ProxyUserID] = append(accountsByUser[acc.ProxyUserID], userUpstreamAccountDTO{
+					ServerID:       acc.ServerID,
+					ServerName:     serverNameByID[acc.ServerID],
+					RemoteUsername: acc.RemoteUsername,
+					RemoteUserID:   acc.RemoteUserID,
+					UpdatedAt:      acc.UpdatedAt,
+				})
+			}
+		}
+	}
+
 	out := make([]adminUserDTO, 0, len(users))
 	for _, u := range users {
 		out = append(out, adminUserDTO{
-			ID:        u.ID,
-			Username:  u.Username,
-			IsAdmin:   u.IsAdmin,
-			CreatedAt: u.CreatedAt,
+			ID:               u.ID,
+			Username:         u.Username,
+			IsAdmin:          u.IsAdmin,
+			CreatedAt:        u.CreatedAt,
+			UpstreamAccounts: accountsByUser[u.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -455,6 +493,135 @@ func (h *Handler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.DeleteUser(r.Context(), targetID); err != nil {
 		h.logger.Error("delete user failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "Failed to delete user")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// --- Per-User Upstream Account Mappings ---
+
+type setUserAccountRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *Handler) handleListUserAccounts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rawID := chi.URLParam(r, "id")
+	userID := rawID
+	if norm, err := idgen.NormalizeID(rawID); err == nil {
+		userID = norm
+	}
+
+	if _, err := h.db.GetUserByID(ctx, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "User not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to lookup user")
+		return
+	}
+
+	serverNameByID := make(map[string]string)
+	if servers, err := h.pool.ListServers(ctx); err == nil {
+		for _, s := range servers {
+			serverNameByID[s.ID] = s.Name
+		}
+	}
+
+	accounts, err := h.pool.ListUserUpstreamAccounts(ctx, userID)
+	if err != nil {
+		h.logger.Error("list user upstream accounts failed", "user_id", userID, "err", err)
+		writeError(w, http.StatusInternalServerError, "Failed to list user upstream accounts")
+		return
+	}
+
+	out := make([]userUpstreamAccountDTO, 0, len(accounts))
+	for _, acc := range accounts {
+		out = append(out, userUpstreamAccountDTO{
+			ServerID:       acc.ServerID,
+			ServerName:     serverNameByID[acc.ServerID],
+			RemoteUsername: acc.RemoteUsername,
+			RemoteUserID:   acc.RemoteUserID,
+			UpdatedAt:      acc.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) handleSetUserAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rawUserID := chi.URLParam(r, "id")
+	userID := rawUserID
+	if norm, err := idgen.NormalizeID(rawUserID); err == nil {
+		userID = norm
+	}
+	rawServerID := chi.URLParam(r, "serverId")
+	serverID := rawServerID
+	if norm, err := idgen.NormalizeID(rawServerID); err == nil {
+		serverID = norm
+	}
+
+	if _, err := h.db.GetUserByID(ctx, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "User not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to lookup user")
+		return
+	}
+
+	srv, err := h.db.GetServerByID(ctx, serverID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "Upstream server not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to lookup upstream server")
+		return
+	}
+
+	var req setUserAccountRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON request body")
+		return
+	}
+	if strings.TrimSpace(req.Username) == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "Upstream username and password are required")
+		return
+	}
+
+	acc, err := h.pool.SetUserUpstreamAccount(ctx, userID, serverID, req.Username, req.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, userUpstreamAccountDTO{
+		ServerID:       acc.ServerID,
+		ServerName:     srv.Name,
+		RemoteUsername: acc.RemoteUsername,
+		RemoteUserID:   acc.RemoteUserID,
+		UpdatedAt:      acc.UpdatedAt,
+	})
+}
+
+func (h *Handler) handleDeleteUserAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rawUserID := chi.URLParam(r, "id")
+	userID := rawUserID
+	if norm, err := idgen.NormalizeID(rawUserID); err == nil {
+		userID = norm
+	}
+	rawServerID := chi.URLParam(r, "serverId")
+	serverID := rawServerID
+	if norm, err := idgen.NormalizeID(rawServerID); err == nil {
+		serverID = norm
+	}
+
+	if err := h.pool.DeleteUserUpstreamAccount(ctx, userID, serverID); err != nil {
+		h.logger.Error("delete user upstream account failed", "user_id", userID, "server_id", serverID, "err", err)
+		writeError(w, http.StatusInternalServerError, "Failed to remove upstream account mapping")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})

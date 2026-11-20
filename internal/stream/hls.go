@@ -16,6 +16,7 @@ import (
 	"github.com/AL1X0/mergerfin/internal/auth"
 	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 const maxPlaylistBytes = 16 << 20
@@ -49,7 +50,8 @@ func (s *Streamer) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	srv, err := s.pool.GetDecryptedServer(ctx, ps.ServerID)
+	userID := s.resolveStreamUserID(ctx, r, ps)
+	srv, isMapped, err := s.pool.GetDecryptedServerForUser(ctx, ps.ServerID, userID)
 	if err != nil {
 		s.logger.Error("decrypt upstream server failed", "server_id", ps.ServerID, "error", err)
 		http.Error(w, "upstream server unavailable", http.StatusBadGateway)
@@ -70,14 +72,13 @@ func (s *Streamer) HandleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 	upQuery := upURL.Query()
 	if srv.AccessToken != "" {
 		upQuery.Del("api_key")
-		if strings.TrimSpace(upQuery.Get("ApiKey")) == "" {
-			upQuery.Set("ApiKey", srv.AccessToken)
-		}
+		upQuery.Set("ApiKey", srv.AccessToken)
 		upURL.RawQuery = upQuery.Encode()
 	}
 
+	id := s.resolveStreamIdentity(ctx, r, userID, ps.DeviceID, isMapped)
 	proxyToken := extractProxyToken(r)
-	s.fetchAndServePlaylist(ctx, w, upURL, srv.AccessToken, itemID, ps.PlaySessionID, proxyToken)
+	s.fetchAndServePlaylist(ctx, w, upURL, srv.AccessToken, id, itemID, ps.PlaySessionID, proxyToken)
 }
 
 // HandleHLSProxy serves GET /Videos/{itemId}/hls-proxy/* by proxying sub-playlists
@@ -108,7 +109,8 @@ func (s *Streamer) HandleHLSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	srv, err := s.pool.GetDecryptedServer(ctx, ps.ServerID)
+	userID := s.resolveStreamUserID(ctx, r, ps)
+	srv, isMapped, err := s.pool.GetDecryptedServerForUser(ctx, ps.ServerID, userID)
 	if err != nil {
 		s.logger.Error("decrypt upstream server failed", "server_id", ps.ServerID, "error", err)
 		http.Error(w, "upstream server unavailable", http.StatusBadGateway)
@@ -126,8 +128,10 @@ func (s *Streamer) HandleHLSProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
 		return
 	}
+	id := s.resolveStreamIdentity(ctx, r, userID, ps.DeviceID, isMapped)
 	if srv.AccessToken != "" {
 		upReq.Header.Set("X-Emby-Token", srv.AccessToken)
+		upReq.Header.Set("Authorization", upstream.BuildMediaBrowserHeader(id, srv.AccessToken))
 	}
 	if rng := r.Header.Get("Range"); rng != "" {
 		upReq.Header.Set("Range", rng)
@@ -179,7 +183,7 @@ func (s *Streamer) HandleHLSProxy(w http.ResponseWriter, r *http.Request) {
 	streamZeroCopy(ctx, w, resp.Body, s.logger)
 }
 
-func (s *Streamer) fetchAndServePlaylist(ctx context.Context, w http.ResponseWriter, upURL *url.URL, upstreamToken, itemID, proxyPlaySessionID, proxyToken string) {
+func (s *Streamer) fetchAndServePlaylist(ctx context.Context, w http.ResponseWriter, upURL *url.URL, upstreamToken string, id upstream.SessionIdentity, itemID, proxyPlaySessionID, proxyToken string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upURL.String(), nil)
 	if err != nil {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
@@ -187,6 +191,7 @@ func (s *Streamer) fetchAndServePlaylist(ctx context.Context, w http.ResponseWri
 	}
 	if upstreamToken != "" {
 		req.Header.Set("X-Emby-Token", upstreamToken)
+		req.Header.Set("Authorization", upstream.BuildMediaBrowserHeader(id, upstreamToken))
 	}
 
 	resp, err := s.httpClient.Do(req)

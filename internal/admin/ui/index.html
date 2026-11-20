@@ -651,7 +651,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">Local Proxy Users</h2>
-          <p class="panel-desc">Users authenticate directly against MergerFin using standard Jellyfin clients.</p>
+          <p class="panel-desc">Users authenticate against MergerFin and can optionally map to dedicated accounts on each upstream server.</p>
         </div>
         <button id="addUserBtn" class="btn btn-primary btn-sm" type="button">+ Create User</button>
       </div>
@@ -662,12 +662,13 @@
               <th>Username</th>
               <th>User ID</th>
               <th>Role</th>
+              <th>Upstream Accounts</th>
               <th>Created</th>
               <th style="text-align:right;">Actions</th>
             </tr>
           </thead>
           <tbody id="usersTableBody">
-            <tr><td colspan="5" class="empty-state">Loading users...</td></tr>
+            <tr><td colspan="6" class="empty-state">Loading users...</td></tr>
           </tbody>
         </table>
       </div>
@@ -761,6 +762,26 @@
         <button type="submit" id="saveUserBtn" class="btn btn-primary">Create User</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- User Upstream Accounts Modal -->
+<div id="userAccountsModalBackdrop" class="modal-backdrop hidden">
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:620px;">
+    <div class="modal-header">
+      <h3 class="modal-title" id="userAccountsModalTitle">Upstream Accounts</h3>
+      <button type="button" class="modal-close" id="closeUserAccountsModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="panel-desc" style="margin-top:0;margin-bottom:14px;">
+        Link dedicated upstream Jellyfin accounts for this user so upstream servers show their real user &amp; watch history. Unmapped servers automatically fall back to the server's default account (tagged with this user's name in Device).
+      </p>
+      <div id="userAccountsAlert" class="alert hidden"></div>
+      <div id="userAccountsList" style="display:flex;flex-direction:column;gap:12px;"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:flex-end;">
+      <button type="button" id="doneUserAccountsModal" class="btn btn-secondary">Close</button>
+    </div>
   </div>
 </div>
 
@@ -969,7 +990,7 @@
   function renderUsers() {
     const tbody = $('usersTableBody');
     if (!state.users.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No local users found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No local users found.</td></tr>';
       return;
     }
     tbody.innerHTML = state.users.map((u) => {
@@ -977,14 +998,20 @@
       const roleBadge = u.isAdmin
         ? '<span class="pill pill-blue">Admin</span>'
         : '<span class="pill pill-muted">User</span>';
+      const mapped = Array.isArray(u.upstreamAccounts) ? u.upstreamAccounts : [];
+      const mappedBadges = mapped.length
+        ? mapped.map((m) => `<span class="pill pill-green" style="margin:2px 4px 2px 0;">${esc(m.serverName || m.serverId)}: ${esc(m.remoteUsername)}</span>`).join('')
+        : '<span class="pill pill-muted">Server default</span>';
       return `
         <tr>
           <td><strong>${esc(u.username)}</strong>${isSelf ? ' <span class="nav-meta">(you)</span>' : ''}</td>
           <td><span class="mono" style="color:var(--muted);">${esc(u.id)}</span></td>
           <td>${roleBadge}</td>
+          <td>${mappedBadges}</td>
           <td><span class="nav-meta">${esc(fmtDate(u.createdAt))}</span></td>
           <td>
             <div class="actions-cell">
+              <button class="btn btn-secondary btn-sm" type="button" data-user-accounts="${esc(u.id)}">Accounts</button>
               <button class="btn btn-danger btn-sm" type="button" ${isSelf ? 'disabled title="Cannot delete your own account"' : ''} data-delete-user="${esc(u.id)}">Delete</button>
             </div>
           </td>
@@ -1239,7 +1266,133 @@
     }
   });
 
+  // User upstream accounts modal
+  let activeAccountsUserId = null;
+
+  function closeUserAccountsModal() {
+    activeAccountsUserId = null;
+    $('userAccountsModalBackdrop').classList.add('hidden');
+  }
+
+  $('closeUserAccountsModal').addEventListener('click', closeUserAccountsModal);
+  $('doneUserAccountsModal').addEventListener('click', closeUserAccountsModal);
+
+  async function openUserAccountsModal(userId) {
+    const u = state.users.find((x) => x.id === userId);
+    if (!u) return;
+    activeAccountsUserId = u.id;
+    $('userAccountsModalTitle').textContent = `Upstream Accounts — ${u.username}`;
+    const alertBox = $('userAccountsAlert');
+    alertBox.classList.add('hidden');
+    alertBox.textContent = '';
+    $('userAccountsList').innerHTML = '<div class="empty-state" style="padding:16px;">Loading accounts...</div>';
+    $('userAccountsModalBackdrop').classList.remove('hidden');
+
+    try {
+      const accounts = await apiFetch('/admin/api/users/' + encodeURIComponent(u.id) + '/accounts');
+      renderUserAccountsList(u, Array.isArray(accounts) ? accounts : []);
+    } catch (err) {
+      alertBox.className = 'alert alert-error';
+      alertBox.textContent = err.message;
+      alertBox.classList.remove('hidden');
+      $('userAccountsList').innerHTML = '';
+    }
+  }
+
+  function renderUserAccountsList(user, accounts) {
+    const container = $('userAccountsList');
+    if (!state.servers.length) {
+      container.innerHTML = '<div class="empty-state" style="padding:16px;">No upstream servers configured yet.</div>';
+      return;
+    }
+    const byServer = {};
+    accounts.forEach((a) => { byServer[a.serverId] = a; });
+
+    container.innerHTML = state.servers.map((s) => {
+      const m = byServer[s.id];
+      const statusBadge = m
+        ? `<span class="pill pill-green">Mapped: ${esc(m.remoteUsername)}</span>`
+        : `<span class="pill pill-muted">Default (${esc(s.username)})</span>`;
+      const unlinkBtn = m
+        ? `<button type="button" class="btn btn-danger btn-sm" data-unlink-server="${esc(s.id)}">Unlink</button>`
+        : '';
+      return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--surface-2);">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <div>
+              <strong>${esc(s.name)}</strong>
+              <span class="mono" style="color:var(--muted);margin-left:6px;font-size:11.5px;">${esc(s.baseUrl)}</span>
+            </div>
+            <div>${statusBadge}</div>
+          </div>
+          <form data-link-server-form="${esc(s.id)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="text" name="username" required placeholder="Upstream username" value="${esc(m ? m.remoteUsername : '')}" style="flex:1;min-width:140px;padding:7px 10px;">
+            <input type="password" name="password" required placeholder="Upstream password" style="flex:1;min-width:140px;padding:7px 10px;">
+            <button type="submit" class="btn btn-primary btn-sm">${m ? 'Update' : 'Link'}</button>
+            ${unlinkBtn}
+          </form>
+        </div>
+      `;
+    }).join('');
+  }
+
+  $('userAccountsList').addEventListener('submit', async (e) => {
+    const form = e.target.closest('[data-link-server-form]');
+    if (!form || !activeAccountsUserId) return;
+    e.preventDefault();
+    const serverId = form.dataset.linkServerForm;
+    const username = form.elements.username.value.trim();
+    const password = form.elements.password.value;
+    const alertBox = $('userAccountsAlert');
+    alertBox.classList.add('hidden');
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await apiFetch('/admin/api/users/' + encodeURIComponent(activeAccountsUserId) + '/accounts/' + encodeURIComponent(serverId), {
+        method: 'PUT',
+        body: { username, password }
+      });
+      showToast('Upstream account linked', 'success');
+      await refreshAll();
+      await openUserAccountsModal(activeAccountsUserId);
+    } catch (err) {
+      alertBox.className = 'alert alert-error';
+      alertBox.textContent = err.message;
+      alertBox.classList.remove('hidden');
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+
+  $('userAccountsList').addEventListener('click', async (e) => {
+    const unlinkBtn = e.target.closest('[data-unlink-server]');
+    if (!unlinkBtn || !activeAccountsUserId) return;
+    const serverId = unlinkBtn.dataset.unlinkServer;
+    const alertBox = $('userAccountsAlert');
+    alertBox.classList.add('hidden');
+    unlinkBtn.disabled = true;
+    try {
+      await apiFetch('/admin/api/users/' + encodeURIComponent(activeAccountsUserId) + '/accounts/' + encodeURIComponent(serverId), {
+        method: 'DELETE'
+      });
+      showToast('Upstream account unlinked', 'success');
+      await refreshAll();
+      await openUserAccountsModal(activeAccountsUserId);
+    } catch (err) {
+      alertBox.className = 'alert alert-error';
+      alertBox.textContent = err.message;
+      alertBox.classList.remove('hidden');
+      unlinkBtn.disabled = false;
+    }
+  });
+
   $('usersTableBody').addEventListener('click', async (e) => {
+    const accBtn = e.target.closest('[data-user-accounts]');
+    if (accBtn) {
+      openUserAccountsModal(accBtn.dataset.userAccounts);
+      return;
+    }
     const delBtn = e.target.closest('[data-delete-user]');
     if (!delBtn) return;
     const id = delBtn.dataset.deleteUser;

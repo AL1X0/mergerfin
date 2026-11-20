@@ -21,6 +21,7 @@ import (
 	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/idgen"
 	syncengine "github.com/AL1X0/mergerfin/internal/sync"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -80,7 +81,7 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	servers, err := h.pool.ListEnabledDecryptedServers(ctx)
+	servers, mappedServers, err := h.pool.ListEnabledDecryptedServersForUser(ctx, ac.User.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to load upstream servers")
 		return
@@ -148,6 +149,7 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 	for _, src := range activeSources {
 		src := src
 		srv := serverByID[src.ServerID]
+		isMapped := mappedServers[srv.ID]
 		g.Go(func() error {
 			fwdQuery := cloneQueryWithoutCI(q, "UserId", "MediaSourceId")
 			if srv.RemoteUserID != "" {
@@ -161,7 +163,16 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 				return nil
 			}
 
-			respBytes, status, err := h.client.PostPlaybackInfo(callCtx, srv, src.RemoteItemID, fwdQuery, fwdBody)
+			srvCtx := upstream.WithSessionIdentity(callCtx, upstream.SessionIdentity{
+				ProxyUsername: ac.User.Username,
+				ClientName:    firstNonEmpty(ac.Client.Client, ac.Session.ClientName),
+				DeviceName:    firstNonEmpty(ac.Client.Device, ac.Session.DeviceName),
+				DeviceID:      deviceID,
+				Version:       firstNonEmpty(ac.Client.Version, ac.Session.AppVersion),
+				IsMappedUser:  isMapped,
+			})
+
+			respBytes, status, err := h.client.PostPlaybackInfo(srvCtx, srv, src.RemoteItemID, fwdQuery, fwdBody)
 			if err != nil {
 				h.logger.Warn("upstream PlaybackInfo request failed", "server_id", srv.ID, "server_name", srv.Name, "error", err)
 				return nil
@@ -329,8 +340,26 @@ func (h *apiHandler) handleStopActiveEncodings(w http.ResponseWriter, r *http.Re
 
 func (h *apiHandler) stopAndDeleteSession(ctx context.Context, ps db.ActivePlaySession) {
 	if ps.ServerID != "" {
-		if srv, err := h.pool.GetDecryptedServer(ctx, ps.ServerID); err == nil && srv != nil {
-			if err := h.client.StopActiveEncodings(ctx, *srv, ps.DeviceID, ps.RemotePlaySessionID); err != nil {
+		if srv, isMapped, err := h.pool.GetDecryptedServerForUser(ctx, ps.ServerID, ps.UserID); err == nil && srv != nil {
+			id := upstream.SessionIdentity{
+				DeviceID:     ps.DeviceID,
+				IsMappedUser: isMapped,
+			}
+			if ac, ok := auth.FromContext(ctx); ok {
+				id.ProxyUsername = ac.User.Username
+				id.ClientName = firstNonEmpty(ac.Client.Client, ac.Session.ClientName)
+				id.DeviceName = firstNonEmpty(ac.Client.Device, ac.Session.DeviceName)
+				id.Version = firstNonEmpty(ac.Client.Version, ac.Session.AppVersion)
+				if id.DeviceID == "" {
+					id.DeviceID = firstNonEmpty(ac.Client.DeviceID, ac.Session.DeviceID)
+				}
+			} else if ps.UserID != "" {
+				if u, err := h.db.GetUserByID(ctx, ps.UserID); err == nil && u != nil {
+					id.ProxyUsername = u.Username
+				}
+			}
+			upCtx := upstream.WithSessionIdentity(ctx, id)
+			if err := h.client.StopActiveEncodings(upCtx, *srv, upstream.FormatUpstreamDeviceID(id), ps.RemotePlaySessionID); err != nil {
 				h.logger.Debug("upstream StopActiveEncodings failed", "server_id", srv.ID, "play_session_id", ps.PlaySessionID, "error", err)
 			}
 		}

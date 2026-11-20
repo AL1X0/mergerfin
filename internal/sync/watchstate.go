@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AL1X0/mergerfin/internal/auth"
 	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/upstream"
 )
@@ -89,11 +90,12 @@ func (m *WatchStateManager) OnPlaying(ctx context.Context, userID, virtualItemID
 	if err != nil || ps == nil {
 		return nil
 	}
-	srv, err := m.pool.GetDecryptedServer(ctx, ps.ServerID)
+	srv, isMapped, err := m.pool.GetDecryptedServerForUser(ctx, ps.ServerID, userID)
 	if err != nil || srv == nil {
 		return nil
 	}
 
+	upCtx := m.withUpstreamIdentity(ctx, userID, ps.DeviceID, isMapped)
 	remoteMSID := m.lookupRemoteMediaSourceID(ctx, ps.SourceID)
 	payload, _ := json.Marshal(map[string]any{
 		"ItemId":        ps.RemoteItemID,
@@ -101,7 +103,7 @@ func (m *WatchStateManager) OnPlaying(ctx context.Context, userID, virtualItemID
 		"PlaySessionId": ps.RemotePlaySessionID,
 		"PositionTicks": positionTicks,
 	})
-	if err := m.client.ReportPlaying(ctx, *srv, payload); err != nil {
+	if err := m.client.ReportPlaying(upCtx, *srv, payload); err != nil {
 		m.logger.Debug("upstream ReportPlaying failed", "server_id", srv.ID, "error", err)
 	}
 	return nil
@@ -142,11 +144,12 @@ func (m *WatchStateManager) OnProgress(ctx context.Context, userID, virtualItemI
 	if err != nil || ps == nil {
 		return nil
 	}
-	srv, err := m.pool.GetDecryptedServer(ctx, ps.ServerID)
+	srv, isMapped, err := m.pool.GetDecryptedServerForUser(ctx, ps.ServerID, userID)
 	if err != nil || srv == nil {
 		return nil
 	}
 
+	upCtx := m.withUpstreamIdentity(ctx, userID, ps.DeviceID, isMapped)
 	remoteMSID := m.lookupRemoteMediaSourceID(ctx, ps.SourceID)
 	payload, _ := json.Marshal(map[string]any{
 		"ItemId":        ps.RemoteItemID,
@@ -155,7 +158,7 @@ func (m *WatchStateManager) OnProgress(ctx context.Context, userID, virtualItemI
 		"PositionTicks": positionTicks,
 		"IsPaused":      isPaused,
 	})
-	if err := m.client.ReportProgress(ctx, *srv, payload); err != nil {
+	if err := m.client.ReportProgress(upCtx, *srv, payload); err != nil {
 		m.logger.Debug("upstream ReportProgress failed", "server_id", srv.ID, "error", err)
 	}
 	return nil
@@ -191,15 +194,23 @@ func (m *WatchStateManager) OnStopped(ctx context.Context, userID, virtualItemID
 	delete(m.lastProgress, progressKey{userID: userID, itemID: virtualItemID})
 	m.throttleMu.Unlock()
 
+	baseIdentity := m.resolveSessionIdentity(ctx, userID, "")
+
 	var ps *db.ActivePlaySession
 	var activeRemoteMSID string
 	if playSessionID != "" {
 		if loadedPS, err := m.db.GetPlaySession(ctx, playSessionID); err == nil && loadedPS != nil {
 			ps = loadedPS
+			if baseIdentity.DeviceID == "" {
+				baseIdentity.DeviceID = ps.DeviceID
+			}
 			activeRemoteMSID = m.lookupRemoteMediaSourceID(ctx, ps.SourceID)
 			if ps.RemotePlaySessionID != "" && m.pool != nil {
-				if srv, err := m.pool.GetDecryptedServer(ctx, ps.ServerID); err == nil && srv != nil {
-					if stopErr := m.client.StopActiveEncodings(ctx, *srv, ps.DeviceID, ps.RemotePlaySessionID); stopErr != nil {
+				if srv, isMapped, err := m.pool.GetDecryptedServerForUser(ctx, ps.ServerID, userID); err == nil && srv != nil {
+					id := baseIdentity
+					id.IsMappedUser = isMapped
+					upCtx := upstream.WithSessionIdentity(ctx, id)
+					if stopErr := m.client.StopActiveEncodings(upCtx, *srv, upstream.FormatUpstreamDeviceID(id), ps.RemotePlaySessionID); stopErr != nil {
 						m.logger.Debug("upstream StopActiveEncodings on stop failed", "server_id", srv.ID, "error", stopErr)
 					}
 				}
@@ -221,14 +232,17 @@ func (m *WatchStateManager) OnStopped(ctx context.Context, userID, virtualItemID
 
 			activeStoppedKey := ""
 			if ps != nil {
-				if srv, err := m.pool.GetDecryptedServer(bgCtx, ps.ServerID); err == nil && srv != nil {
+				if srv, isMapped, err := m.pool.GetDecryptedServerForUser(bgCtx, ps.ServerID, userID); err == nil && srv != nil {
+					id := baseIdentity
+					id.IsMappedUser = isMapped
+					upCtx := upstream.WithSessionIdentity(bgCtx, id)
 					payload, _ := json.Marshal(map[string]any{
 						"ItemId":        ps.RemoteItemID,
 						"MediaSourceId": activeRemoteMSID,
 						"PlaySessionId": ps.RemotePlaySessionID,
 						"PositionTicks": positionTicks,
 					})
-					if err := m.client.ReportStopped(bgCtx, *srv, payload); err != nil {
+					if err := m.client.ReportStopped(upCtx, *srv, payload); err != nil {
 						m.logger.Debug("upstream ReportStopped failed", "server_id", srv.ID, "error", err)
 					} else {
 						activeStoppedKey = ps.ServerID + ":" + ps.RemoteItemID
@@ -236,10 +250,13 @@ func (m *WatchStateManager) OnStopped(ctx context.Context, userID, virtualItemID
 				}
 			}
 
-			targets := m.collectUpstreamTargets(bgCtx, virtualItemID)
+			targets := m.collectUpstreamTargets(bgCtx, userID, virtualItemID)
 			for _, t := range targets {
+				id := baseIdentity
+				id.IsMappedUser = t.isMapped
+				upCtx := upstream.WithSessionIdentity(bgCtx, id)
 				if played {
-					if err := m.client.MarkPlayed(bgCtx, t.srv, t.remoteItemID, true); err != nil {
+					if err := m.client.MarkPlayed(upCtx, t.srv, t.remoteItemID, true); err != nil {
 						m.logger.Debug("upstream MarkPlayed on stop failed", "server_id", t.srv.ID, "error", err)
 					}
 					continue
@@ -252,7 +269,7 @@ func (m *WatchStateManager) OnStopped(ctx context.Context, userID, virtualItemID
 					"MediaSourceId": t.remoteMediaSourceID,
 					"PositionTicks": positionTicks,
 				})
-				if err := m.client.ReportStopped(bgCtx, t.srv, payload); err != nil {
+				if err := m.client.ReportStopped(upCtx, t.srv, payload); err != nil {
 					m.logger.Debug("upstream ReportStopped fan-out failed", "server_id", t.srv.ID, "error", err)
 				}
 			}
@@ -280,14 +297,18 @@ func (m *WatchStateManager) SetPlayed(ctx context.Context, userID, virtualItemID
 	m.broadcastUserDataChanged(userID, virtualItemID, ud)
 
 	if m.pool != nil {
+		baseIdentity := m.resolveSessionIdentity(ctx, userID, "")
 		m.wg.Add(1)
 		go func() {
 			defer m.wg.Done()
 			bgCtx, cancel := context.WithTimeout(context.Background(), watchPropagateTimeout)
 			defer cancel()
 
-			for _, t := range m.collectUpstreamTargets(bgCtx, virtualItemID) {
-				if err := m.client.MarkPlayed(bgCtx, t.srv, t.remoteItemID, played); err != nil {
+			for _, t := range m.collectUpstreamTargets(bgCtx, userID, virtualItemID) {
+				id := baseIdentity
+				id.IsMappedUser = t.isMapped
+				upCtx := upstream.WithSessionIdentity(bgCtx, id)
+				if err := m.client.MarkPlayed(upCtx, t.srv, t.remoteItemID, played); err != nil {
 					m.logger.Debug("upstream MarkPlayed fan-out failed", "server_id", t.srv.ID, "error", err)
 				}
 			}
@@ -315,14 +336,18 @@ func (m *WatchStateManager) SetFavorite(ctx context.Context, userID, virtualItem
 	m.broadcastUserDataChanged(userID, virtualItemID, ud)
 
 	if m.pool != nil {
+		baseIdentity := m.resolveSessionIdentity(ctx, userID, "")
 		m.wg.Add(1)
 		go func() {
 			defer m.wg.Done()
 			bgCtx, cancel := context.WithTimeout(context.Background(), watchPropagateTimeout)
 			defer cancel()
 
-			for _, t := range m.collectUpstreamTargets(bgCtx, virtualItemID) {
-				if err := m.client.MarkFavorite(bgCtx, t.srv, t.remoteItemID, favorite); err != nil {
+			for _, t := range m.collectUpstreamTargets(bgCtx, userID, virtualItemID) {
+				id := baseIdentity
+				id.IsMappedUser = t.isMapped
+				upCtx := upstream.WithSessionIdentity(bgCtx, id)
+				if err := m.client.MarkFavorite(upCtx, t.srv, t.remoteItemID, favorite); err != nil {
 					m.logger.Debug("upstream MarkFavorite fan-out failed", "server_id", t.srv.ID, "error", err)
 				}
 			}
@@ -357,14 +382,58 @@ type upstreamWatchTarget struct {
 	srv                 db.UpstreamServer
 	remoteItemID        string
 	remoteMediaSourceID string
+	isMapped            bool
 }
 
-func (m *WatchStateManager) collectUpstreamTargets(ctx context.Context, virtualItemID string) []upstreamWatchTarget {
+func (m *WatchStateManager) resolveSessionIdentity(ctx context.Context, userID, fallbackDeviceID string) upstream.SessionIdentity {
+	id := upstream.SessionIdentity{
+		DeviceID: fallbackDeviceID,
+	}
+	if ac, ok := auth.FromContext(ctx); ok {
+		id.ProxyUsername = ac.User.Username
+		if ac.Client.Client != "" {
+			id.ClientName = ac.Client.Client
+		} else {
+			id.ClientName = ac.Session.ClientName
+		}
+		if ac.Client.Device != "" {
+			id.DeviceName = ac.Client.Device
+		} else {
+			id.DeviceName = ac.Session.DeviceName
+		}
+		if id.DeviceID == "" {
+			if ac.Client.DeviceID != "" {
+				id.DeviceID = ac.Client.DeviceID
+			} else {
+				id.DeviceID = ac.Session.DeviceID
+			}
+		}
+		if ac.Client.Version != "" {
+			id.Version = ac.Client.Version
+		} else {
+			id.Version = ac.Session.AppVersion
+		}
+	}
+	if id.ProxyUsername == "" && userID != "" && m.db != nil {
+		if u, err := m.db.GetUserByID(ctx, userID); err == nil && u != nil {
+			id.ProxyUsername = u.Username
+		}
+	}
+	return id
+}
+
+func (m *WatchStateManager) withUpstreamIdentity(ctx context.Context, userID, fallbackDeviceID string, isMapped bool) context.Context {
+	id := m.resolveSessionIdentity(ctx, userID, fallbackDeviceID)
+	id.IsMappedUser = isMapped
+	return upstream.WithSessionIdentity(ctx, id)
+}
+
+func (m *WatchStateManager) collectUpstreamTargets(ctx context.Context, userID, virtualItemID string) []upstreamWatchTarget {
 	sources, err := m.db.ListSourcesByVirtualItemID(ctx, virtualItemID)
 	if err != nil || len(sources) == 0 {
 		return nil
 	}
-	servers, err := m.pool.ListEnabledDecryptedServers(ctx)
+	servers, mapped, err := m.pool.ListEnabledDecryptedServersForUser(ctx, userID)
 	if err != nil || len(servers) == 0 {
 		return nil
 	}
@@ -390,6 +459,7 @@ func (m *WatchStateManager) collectUpstreamTargets(ctx context.Context, virtualI
 			srv:                 srv,
 			remoteItemID:        src.RemoteItemID,
 			remoteMediaSourceID: src.RemoteMediaSourceID,
+			isMapped:            mapped[srv.ID],
 		})
 	}
 	return targets

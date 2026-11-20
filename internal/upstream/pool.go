@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -421,6 +422,146 @@ func (p *Pool) ListEnabledDecryptedServers(ctx context.Context) ([]db.UpstreamSe
 		servers[i].AccessToken = plain
 	}
 	return servers, nil
+}
+
+// SetUserUpstreamAccount authenticates (username, password) against the upstream server
+// and stores an encrypted per-user upstream token mapping for proxyUserID.
+func (p *Pool) SetUserUpstreamAccount(ctx context.Context, proxyUserID, serverID, username, password string) (*db.UserUpstreamAccount, error) {
+	cleanUser := strings.TrimSpace(username)
+	if cleanUser == "" {
+		return nil, errors.New("upstream username must not be empty")
+	}
+	if password == "" {
+		return nil, errors.New("upstream password must not be empty")
+	}
+
+	srv, err := p.db.GetServerByID(ctx, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("load upstream server %s: %w", serverID, err)
+	}
+
+	probe, err := p.TestConnection(ctx, srv.BaseURL, cleanUser, password)
+	if err != nil {
+		return nil, err
+	}
+
+	encToken, err := p.EncryptToken(probe.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt user upstream token: %w", err)
+	}
+
+	acc := db.UserUpstreamAccount{
+		ProxyUserID:    proxyUserID,
+		ServerID:       serverID,
+		RemoteUsername: cleanUser,
+		RemoteUserID:   probe.RemoteUserID,
+		AccessToken:    encToken,
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := p.db.UpsertUserUpstreamAccount(ctx, acc); err != nil {
+		return nil, err
+	}
+	return &acc, nil
+}
+
+// DeleteUserUpstreamAccount removes the dedicated upstream account mapping for (proxyUserID, serverID).
+func (p *Pool) DeleteUserUpstreamAccount(ctx context.Context, proxyUserID, serverID string) error {
+	return p.db.DeleteUserUpstreamAccount(ctx, proxyUserID, serverID)
+}
+
+// ListUserUpstreamAccounts returns all upstream account mappings for proxyUserID (tokens remain encrypted).
+func (p *Pool) ListUserUpstreamAccounts(ctx context.Context, proxyUserID string) ([]db.UserUpstreamAccount, error) {
+	return p.db.ListUserUpstreamAccountsByUser(ctx, proxyUserID)
+}
+
+// ListAllUserUpstreamAccounts returns all per-user upstream account mappings (tokens remain encrypted).
+func (p *Pool) ListAllUserUpstreamAccounts(ctx context.Context) ([]db.UserUpstreamAccount, error) {
+	return p.db.ListAllUserUpstreamAccounts(ctx)
+}
+
+// GetDecryptedServerForUser loads an upstream server and, when proxyUserID has a dedicated
+// account mapped for that server, overrides Username, RemoteUserID, and AccessToken with
+// the mapped user's decrypted credentials. The bool return indicates whether a dedicated mapping was used.
+func (p *Pool) GetDecryptedServerForUser(ctx context.Context, serverID, proxyUserID string) (*db.UpstreamServer, bool, error) {
+	srv, err := p.GetDecryptedServer(ctx, serverID)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(proxyUserID) == "" {
+		return srv, false, nil
+	}
+
+	acc, err := p.db.GetUserUpstreamAccount(ctx, proxyUserID, serverID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return srv, false, nil
+		}
+		p.logger.Warn("lookup user upstream account failed; falling back to default server account",
+			"user_id", proxyUserID, "server_id", serverID, "error", err)
+		return srv, false, nil
+	}
+	if acc == nil || acc.AccessToken == "" {
+		return srv, false, nil
+	}
+
+	plain, err := p.DecryptToken(acc.AccessToken)
+	if err != nil {
+		p.logger.Warn("decrypt user upstream token failed; falling back to default server account",
+			"user_id", proxyUserID, "server_id", serverID, "error", err)
+		return srv, false, nil
+	}
+
+	srv.Username = acc.RemoteUsername
+	srv.RemoteUserID = acc.RemoteUserID
+	srv.AccessToken = plain
+	return srv, true, nil
+}
+
+// ListEnabledDecryptedServersForUser returns all enabled upstream servers, overriding credentials
+// for any server where proxyUserID has a dedicated upstream account mapping.
+// The returned map indicates which server IDs used a dedicated user mapping.
+func (p *Pool) ListEnabledDecryptedServersForUser(ctx context.Context, proxyUserID string) ([]db.UpstreamServer, map[string]bool, error) {
+	servers, err := p.ListEnabledDecryptedServers(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	mapped := make(map[string]bool)
+	if strings.TrimSpace(proxyUserID) == "" {
+		return servers, mapped, nil
+	}
+
+	accounts, err := p.db.ListUserUpstreamAccountsByUser(ctx, proxyUserID)
+	if err != nil {
+		p.logger.Warn("list user upstream accounts failed; falling back to default server accounts",
+			"user_id", proxyUserID, "error", err)
+		return servers, mapped, nil
+	}
+	if len(accounts) == 0 {
+		return servers, mapped, nil
+	}
+
+	accByServer := make(map[string]db.UserUpstreamAccount, len(accounts))
+	for _, acc := range accounts {
+		accByServer[acc.ServerID] = acc
+	}
+
+	for i := range servers {
+		acc, ok := accByServer[servers[i].ID]
+		if !ok || acc.AccessToken == "" {
+			continue
+		}
+		plain, err := p.DecryptToken(acc.AccessToken)
+		if err != nil {
+			p.logger.Warn("decrypt user upstream token failed; falling back to default server account",
+				"user_id", proxyUserID, "server_id", servers[i].ID, "error", err)
+			continue
+		}
+		servers[i].Username = acc.RemoteUsername
+		servers[i].RemoteUserID = acc.RemoteUserID
+		servers[i].AccessToken = plain
+		mapped[servers[i].ID] = true
+	}
+	return servers, mapped, nil
 }
 
 // DeleteServer removes an upstream server by ID.

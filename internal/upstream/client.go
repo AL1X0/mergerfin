@@ -187,7 +187,7 @@ func (c *Client) doRequest(ctx context.Context, method, fullURL, accessToken str
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	req.Header.Set("Authorization", authHeaderForServer(accessToken))
+	req.Header.Set("Authorization", BuildMediaBrowserHeader(SessionIdentityFromContext(ctx), accessToken))
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)

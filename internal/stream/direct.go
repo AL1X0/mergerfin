@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/AL1X0/mergerfin/internal/auth"
 	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/idgen"
 	"github.com/AL1X0/mergerfin/internal/upstream"
@@ -109,7 +110,8 @@ func (s *Streamer) HandleDirectStream(w http.ResponseWriter, r *http.Request) {
 		src = &sources[0]
 	}
 
-	srv, err := s.pool.GetDecryptedServer(ctx, src.ServerID)
+	userID := s.resolveStreamUserID(ctx, r, nil)
+	srv, isMapped, err := s.pool.GetDecryptedServerForUser(ctx, src.ServerID, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "upstream server not found", http.StatusNotFound)
@@ -137,8 +139,10 @@ func (s *Streamer) HandleDirectStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
 		return
 	}
+	id := s.resolveStreamIdentity(ctx, r, userID, "", isMapped)
 	if srv.AccessToken != "" {
 		upReq.Header.Set("X-Emby-Token", srv.AccessToken)
+		upReq.Header.Set("Authorization", upstream.BuildMediaBrowserHeader(id, srv.AccessToken))
 	}
 	if rng := r.Header.Get("Range"); rng != "" {
 		upReq.Header.Set("Range", rng)
@@ -239,4 +243,60 @@ func queryVal(q url.Values, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Streamer) resolveStreamUserID(ctx context.Context, r *http.Request, ps *db.ActivePlaySession) string {
+	if ps != nil && ps.UserID != "" {
+		return ps.UserID
+	}
+	if ac, ok := auth.FromContext(ctx); ok && ac.User.ID != "" {
+		return ac.User.ID
+	}
+	if psID := queryFirst(r, "mf_ps", "PlaySessionId", "playSessionId"); psID != "" && s.db != nil {
+		if found, err := s.db.GetPlaySession(ctx, psID); err == nil && found != nil && found.UserID != "" {
+			return found.UserID
+		}
+	}
+	return ""
+}
+
+func (s *Streamer) resolveStreamIdentity(ctx context.Context, r *http.Request, userID, fallbackDeviceID string, isMapped bool) upstream.SessionIdentity {
+	id := upstream.SessionIdentity{
+		DeviceID:     fallbackDeviceID,
+		IsMappedUser: isMapped,
+	}
+	if ac, ok := auth.FromContext(ctx); ok {
+		id.ProxyUsername = ac.User.Username
+		if ac.Client.Client != "" {
+			id.ClientName = ac.Client.Client
+		} else {
+			id.ClientName = ac.Session.ClientName
+		}
+		if ac.Client.Device != "" {
+			id.DeviceName = ac.Client.Device
+		} else {
+			id.DeviceName = ac.Session.DeviceName
+		}
+		if id.DeviceID == "" {
+			if ac.Client.DeviceID != "" {
+				id.DeviceID = ac.Client.DeviceID
+			} else {
+				id.DeviceID = ac.Session.DeviceID
+			}
+		}
+		if ac.Client.Version != "" {
+			id.Version = ac.Client.Version
+		} else {
+			id.Version = ac.Session.AppVersion
+		}
+	}
+	if id.DeviceID == "" && r != nil {
+		id.DeviceID = queryFirst(r, "DeviceId", "deviceId")
+	}
+	if id.ProxyUsername == "" && userID != "" && s.db != nil {
+		if u, err := s.db.GetUserByID(ctx, userID); err == nil && u != nil {
+			id.ProxyUsername = u.Username
+		}
+	}
+	return id
 }
