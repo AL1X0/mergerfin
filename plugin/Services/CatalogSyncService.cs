@@ -135,6 +135,12 @@ public class CatalogSyncService
                 continue;
             }
 
+            // Mesh anti-loop guard: never re-index items that are themselves MergerFin .strm stubs on the remote server!
+            if (IsMergerFinStrmItem(item))
+            {
+                continue;
+            }
+
             var itemProviders = item.ProviderIds != null
                 ? new Dictionary<string, string>(item.ProviderIds, StringComparer.OrdinalIgnoreCase)
                 : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -156,7 +162,7 @@ public class CatalogSyncService
 
             foreach (var ms in item.MediaSources)
             {
-                if (string.IsNullOrWhiteSpace(ms.Id))
+                if (string.IsNullOrWhiteSpace(ms.Id) || IsRelayedMediaSource(ms))
                 {
                     continue;
                 }
@@ -206,6 +212,47 @@ public class CatalogSyncService
         }
 
         return result;
+    }
+
+    private static bool IsMergerFinStrmItem(RemoteItemDto item)
+    {
+        var path = item.Path ?? string.Empty;
+        if (path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase))
+        {
+            if (path.Contains("mergerfin", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // If all media sources of a .strm item are HTTP/MergerFin relays, never re-index it.
+            if (item.MediaSources != null && item.MediaSources.All(IsRelayedMediaSource))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsRelayedMediaSource(RemoteMediaSourceDto ms)
+    {
+        if (ms.Id.StartsWith("mf_", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var path = ms.Path ?? string.Empty;
+        if (path.Contains("/MergerFin/Stream/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (ms.IsRemote && string.Equals(ms.Protocol, "Http", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string BuildSourceLabel(string serverName, RemoteMediaSourceDto ms, List<IndexedMediaStream> streams)

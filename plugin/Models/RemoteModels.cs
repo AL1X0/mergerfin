@@ -182,6 +182,9 @@ public class RemoteItemDto
     [JsonPropertyName("RunTimeTicks")]
     public long? RunTimeTicks { get; set; }
 
+    [JsonPropertyName("Path")]
+    public string? Path { get; set; }
+
     [JsonPropertyName("ProviderIds")]
     public Dictionary<string, string>? ProviderIds { get; set; }
 
@@ -196,6 +199,15 @@ public class RemoteMediaSourceDto
 
     [JsonPropertyName("Name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("Path")]
+    public string? Path { get; set; }
+
+    [JsonPropertyName("Protocol")]
+    public string? Protocol { get; set; }
+
+    [JsonPropertyName("IsRemote")]
+    public bool IsRemote { get; set; }
 
     [JsonPropertyName("Container")]
     public string? Container { get; set; }

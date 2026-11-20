@@ -226,7 +226,7 @@ public class UpstreamClient
         var all = new List<RemoteItemDto>();
         var startIndex = 0;
         var typesParam = Uri.EscapeDataString(string.Join(",", itemTypes));
-        const string fields = "ProviderIds,MediaSources,MediaStreams,ProductionYear";
+        const string fields = "ProviderIds,MediaSources,MediaStreams,ProductionYear,Path";
 
         while (true)
         {
