@@ -63,7 +63,7 @@ public class CatalogSyncService
         try
         {
             var enabledServers = cfg.Servers
-                .Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.BaseUrl) && !string.IsNullOrWhiteSpace(s.AccessToken))
+                .Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.BaseUrl) && !string.IsNullOrWhiteSpace(s.GetEffectiveApiKey()))
                 .OrderBy(s => s.Priority)
                 .ToList();
 

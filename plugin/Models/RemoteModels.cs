@@ -101,11 +101,8 @@ public class ProbeResult
     [JsonPropertyName("version")]
     public string Version { get; set; } = string.Empty;
 
-    [JsonPropertyName("remoteUserId")]
-    public string RemoteUserId { get; set; } = string.Empty;
-
-    [JsonPropertyName("accessToken")]
-    public string AccessToken { get; set; } = string.Empty;
+    [JsonPropertyName("userCount")]
+    public int UserCount { get; set; }
 
     [JsonPropertyName("error")]
     public string Error { get; set; } = string.Empty;

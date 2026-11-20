@@ -128,19 +128,16 @@ public class WatchStateSyncService : IHostedService
                 }
 
                 var first = group.First();
-                var (_, token, isMapped) = _client.ResolveCredentials(cfg, srv, localUserId);
                 var identity = new UpstreamSessionIdentity
                 {
                     LocalUsername = localUsername,
                     ClientName = e.Session?.Client ?? "Jellyfin",
                     DeviceName = e.Session?.DeviceName ?? string.Empty,
-                    DeviceId = e.Session?.DeviceId ?? string.Empty,
-                    IsMappedUser = isMapped
+                    DeviceId = e.Session?.DeviceId ?? string.Empty
                 };
 
                 await _client.ReportPlaystateAsync(
                     srv,
-                    token,
                     endpoint,
                     new
                     {
@@ -187,24 +184,28 @@ public class WatchStateSyncService : IHostedService
                 }
 
                 var first = group.First();
-                var (remoteUserId, token, isMapped) = _client.ResolveCredentials(cfg, srv, localUserId);
+                var remoteUserId = await _client.ResolveRemoteUserIdByUsernameAsync(srv, localUsername, cts.Token).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(remoteUserId))
+                {
+                    continue;
+                }
+
                 var identity = new UpstreamSessionIdentity
                 {
                     LocalUsername = localUsername,
                     ClientName = "Jellyfin",
                     DeviceName = "WatchStateSync",
-                    DeviceId = localUserId ?? string.Empty,
-                    IsMappedUser = isMapped
+                    DeviceId = localUserId ?? string.Empty
                 };
 
                 if (e.SaveReason == UserDataSaveReason.TogglePlayed || e.SaveReason == UserDataSaveReason.PlaybackFinished)
                 {
-                    await _client.MarkPlayedAsync(srv, remoteUserId, token, first.RemoteItemId, e.UserData.Played, identity, cts.Token).ConfigureAwait(false);
+                    await _client.MarkPlayedAsync(srv, remoteUserId, first.RemoteItemId, e.UserData.Played, identity, cts.Token).ConfigureAwait(false);
                 }
 
                 if (e.SaveReason == UserDataSaveReason.UpdateUserRating)
                 {
-                    await _client.MarkFavoriteAsync(srv, remoteUserId, token, first.RemoteItemId, e.UserData.IsFavorite, identity, cts.Token).ConfigureAwait(false);
+                    await _client.MarkFavoriteAsync(srv, remoteUserId, first.RemoteItemId, e.UserData.IsFavorite, identity, cts.Token).ConfigureAwait(false);
                 }
             }
         }

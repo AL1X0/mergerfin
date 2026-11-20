@@ -49,16 +49,14 @@ public class MergerFinController : ControllerBase
     {
         public string BaseUrl { get; set; } = string.Empty;
 
-        public string Username { get; set; } = string.Empty;
-
-        public string Password { get; set; } = string.Empty;
+        public string ApiKey { get; set; } = string.Empty;
     }
 
     [HttpPost("Servers/Test")]
     [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult<ProbeResult>> TestServer([FromBody] TestServerRequest req, CancellationToken ct)
     {
-        var result = await _client.TestConnectionAsync(req.BaseUrl, req.Username, req.Password, ct).ConfigureAwait(false);
+        var result = await _client.TestApiKeyAsync(req.BaseUrl, req.ApiKey, ct).ConfigureAwait(false);
         return Ok(result);
     }
 
@@ -130,21 +128,27 @@ public class MergerFinController : ControllerBase
             return;
         }
 
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            Response.StatusCode = StatusCodes.Status502BadGateway;
+            await Response.WriteAsync("Upstream server API key missing.", ct).ConfigureAwait(false);
+            return;
+        }
+
         var (localUserId, localUsername) = ResolveCallerUser();
-        var (_, accessToken, isMapped) = _client.ResolveCredentials(cfg, srv, localUserId);
         var identity = new UpstreamSessionIdentity
         {
             LocalUsername = localUsername,
             ClientName = "Jellyfin",
             DeviceName = Request.Headers.UserAgent.ToString(),
-            DeviceId = localUserId ?? string.Empty,
-            IsMappedUser = isMapped
+            DeviceId = localUserId ?? string.Empty
         };
 
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
         var targetUrl =
             $"{baseUrl}/Videos/{Uri.EscapeDataString(src.RemoteItemId)}/stream" +
-            $"?static=true&mediaSourceId={Uri.EscapeDataString(src.RemoteMediaSourceId)}&ApiKey={Uri.EscapeDataString(accessToken)}";
+            $"?static=true&mediaSourceId={Uri.EscapeDataString(src.RemoteMediaSourceId)}&ApiKey={Uri.EscapeDataString(apiKey)}";
 
         if (string.Equals(srv.StreamMode, "redirect", StringComparison.OrdinalIgnoreCase))
         {
@@ -155,8 +159,8 @@ public class MergerFinController : ControllerBase
         using var upReq = new HttpRequestMessage(
             HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
             targetUrl);
-        upReq.Headers.TryAddWithoutValidation("X-Emby-Token", accessToken);
-        upReq.Headers.TryAddWithoutValidation("Authorization", UpstreamClient.BuildMediaBrowserHeader(accessToken, identity));
+        upReq.Headers.TryAddWithoutValidation("X-Emby-Token", apiKey);
+        upReq.Headers.TryAddWithoutValidation("Authorization", UpstreamClient.BuildMediaBrowserHeader(apiKey, identity));
 
         if (Request.Headers.TryGetValue("Range", out var rangeVal) && !string.IsNullOrWhiteSpace(rangeVal))
         {

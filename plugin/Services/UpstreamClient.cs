@@ -1,7 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -15,7 +15,7 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.MergerFin.Services;
 
 /// <summary>
-/// HTTP client for communicating with remote Jellyfin servers (auth, catalog fetch, streaming, watch-state).
+/// HTTP client for communicating with remote Jellyfin servers exclusively via API Key.
 /// </summary>
 public class UpstreamClient
 {
@@ -24,8 +24,11 @@ public class UpstreamClient
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly TimeSpan UserCacheTtl = TimeSpan.FromMinutes(15);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<UpstreamClient> _logger;
+    private readonly ConcurrentDictionary<string, (DateTime FetchedAtUtc, Dictionary<string, string> UsersByName)> _remoteUsersCache = new(StringComparer.OrdinalIgnoreCase);
 
     public UpstreamClient(IHttpClientFactory httpClientFactory, ILogger<UpstreamClient> logger)
     {
@@ -33,33 +36,27 @@ public class UpstreamClient
         _logger = logger;
     }
 
-    public static string BuildMediaBrowserHeader(string accessToken, UpstreamSessionIdentity? id = null)
+    public static string BuildMediaBrowserHeader(string apiKey, UpstreamSessionIdentity? id = null)
     {
         if (id == null || (string.IsNullOrWhiteSpace(id.LocalUsername) && string.IsNullOrWhiteSpace(id.ClientName)))
         {
-            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.0\"";
-            return string.IsNullOrEmpty(accessToken) ? baseHdr : $"{baseHdr}, Token=\"{Sanitize(accessToken, 256)}\"";
+            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.4\"";
+            return string.IsNullOrEmpty(apiKey) ? baseHdr : $"{baseHdr}, Token=\"{Sanitize(apiKey, 256)}\"";
         }
 
         var client = string.IsNullOrWhiteSpace(id.ClientName) ? "MergerFin Plugin" : Sanitize(id.ClientName, 48);
         var user = Sanitize(id.LocalUsername, 48);
         var device = Sanitize(id.DeviceName, 48);
 
-        string displayDevice;
-        if (!id.IsMappedUser && !string.IsNullOrEmpty(user))
-        {
-            displayDevice = string.IsNullOrEmpty(device) ? user : $"{user} ({device})";
-        }
-        else
-        {
-            displayDevice = string.IsNullOrEmpty(device) ? "Jellyfin Host" : device;
-        }
+        var displayDevice = !string.IsNullOrEmpty(user)
+            ? (string.IsNullOrEmpty(device) ? user : $"{user} ({device})")
+            : (string.IsNullOrEmpty(device) ? "Jellyfin Host" : device);
 
         var devId = BuildDeviceId(user, id.DeviceId);
-        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.0\"";
-        if (!string.IsNullOrEmpty(accessToken))
+        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.4\"";
+        if (!string.IsNullOrEmpty(apiKey))
         {
-            header += $", Token=\"{Sanitize(accessToken, 256)}\"";
+            header += $", Token=\"{Sanitize(apiKey, 256)}\"";
         }
 
         return header;
@@ -130,12 +127,21 @@ public class UpstreamClient
         return sb.ToString().Trim('-', '_');
     }
 
-    public async Task<ProbeResult> TestConnectionAsync(string baseUrl, string username, string password, CancellationToken ct)
+    /// <summary>
+    /// Probes /System/Info/Public and validates the API Key against GET /Users.
+    /// </summary>
+    public async Task<ProbeResult> TestApiKeyAsync(string baseUrl, string apiKey, CancellationToken ct)
     {
         var cleanUrl = (baseUrl ?? string.Empty).Trim().TrimEnd('/');
+        var cleanKey = (apiKey ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(cleanUrl))
         {
-            return new ProbeResult { Online = false, Error = "BaseUrl is required." };
+            return new ProbeResult { Online = false, Error = "Server Base URL is required." };
+        }
+
+        if (string.IsNullOrWhiteSpace(cleanKey))
+        {
+            return new ProbeResult { Online = false, Error = "API Key is required." };
         }
 
         var client = _httpClientFactory.CreateClient("MergerFin");
@@ -161,13 +167,12 @@ public class UpstreamClient
             var serverName = infoDoc.RootElement.TryGetProperty("ServerName", out var sn) ? sn.GetString() ?? string.Empty : string.Empty;
             var version = infoDoc.RootElement.TryGetProperty("Version", out var vr) ? vr.GetString() ?? string.Empty : string.Empty;
 
-            var payload = JsonSerializer.Serialize(new { Username = username, Pw = password });
-            using var authReq = new HttpRequestMessage(HttpMethod.Post, $"{cleanUrl}/Users/AuthenticateByName");
-            authReq.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(string.Empty));
-            authReq.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var usersReq = new HttpRequestMessage(HttpMethod.Get, $"{cleanUrl}/Users");
+            usersReq.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(cleanKey));
+            usersReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            using var authResp = await client.SendAsync(authReq, ct).ConfigureAwait(false);
-            if (!authResp.IsSuccessStatusCode)
+            using var usersResp = await client.SendAsync(usersReq, ct).ConfigureAwait(false);
+            if (!usersResp.IsSuccessStatusCode)
             {
                 return new ProbeResult
                 {
@@ -175,16 +180,19 @@ public class UpstreamClient
                     LatencyMs = sw.ElapsedMilliseconds,
                     ServerName = serverName,
                     Version = version,
-                    Error = $"Authentication failed (HTTP {(int)authResp.StatusCode})"
+                    Error = $"API Key rejected (HTTP {(int)usersResp.StatusCode})"
                 };
             }
 
-            var authJson = await authResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            using var authDoc = JsonDocument.Parse(authJson);
-            var token = authDoc.RootElement.TryGetProperty("AccessToken", out var tk) ? tk.GetString() ?? string.Empty : string.Empty;
-            var remoteUserId = authDoc.RootElement.TryGetProperty("User", out var usr) && usr.TryGetProperty("Id", out var uid)
-                ? uid.GetString() ?? string.Empty
-                : string.Empty;
+            var usersJson = await usersResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var userCount = 0;
+            using (var usersDoc = JsonDocument.Parse(usersJson))
+            {
+                if (usersDoc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    userCount = usersDoc.RootElement.GetArrayLength();
+                }
+            }
 
             return new ProbeResult
             {
@@ -192,8 +200,7 @@ public class UpstreamClient
                 LatencyMs = sw.ElapsedMilliseconds,
                 ServerName = serverName,
                 Version = version,
-                RemoteUserId = remoteUserId,
-                AccessToken = token
+                UserCount = userCount
             };
         }
         catch (Exception ex)
@@ -211,6 +218,7 @@ public class UpstreamClient
     public async Task<List<RemoteItemDto>> FetchAllItemsAsync(RemoteServerConfig srv, string[] itemTypes, CancellationToken ct)
     {
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
+        var apiKey = srv.GetEffectiveApiKey();
         var client = _httpClientFactory.CreateClient("MergerFin");
         client.Timeout = TimeSpan.FromSeconds(45);
 
@@ -222,13 +230,10 @@ public class UpstreamClient
 
         while (true)
         {
-            var path = string.IsNullOrWhiteSpace(srv.RemoteUserId)
-                ? $"{baseUrl}/Items"
-                : $"{baseUrl}/Users/{Uri.EscapeDataString(srv.RemoteUserId)}/Items";
-            var url = $"{path}?Recursive=true&IncludeItemTypes={typesParam}&CollapseBoxSetItems=false&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
+            var url = $"{baseUrl}/Items?Recursive=true&IncludeItemTypes={typesParam}&CollapseBoxSetItems=false&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(srv.AccessToken));
+            req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey));
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
@@ -257,37 +262,77 @@ public class UpstreamClient
         return all;
     }
 
-    public (string RemoteUserId, string AccessToken, bool IsMapped) ResolveCredentials(
-        PluginConfiguration cfg,
-        RemoteServerConfig srv,
-        string? localUserId)
+    /// <summary>
+    /// Automatically resolves a local Jellyfin username to the matching remote user's ID
+    /// on the upstream server via GET /Users (cached 15 minutes).
+    /// </summary>
+    public async Task<string?> ResolveRemoteUserIdByUsernameAsync(RemoteServerConfig srv, string? localUsername, CancellationToken ct)
     {
-        if (!string.IsNullOrWhiteSpace(localUserId))
+        if (string.IsNullOrWhiteSpace(localUsername))
         {
-            var normLocal = localUserId.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
-            var mapping = cfg.UserMappings.FirstOrDefault(m =>
-                string.Equals(m.ServerId, srv.Id, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(m.LocalUserId.Replace("-", string.Empty, StringComparison.Ordinal), normLocal, StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(m.AccessToken));
-            if (mapping != null)
-            {
-                return (mapping.RemoteUserId, mapping.AccessToken, true);
-            }
+            return null;
         }
 
-        return (srv.RemoteUserId, srv.AccessToken, false);
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return null;
+        }
+
+        if (_remoteUsersCache.TryGetValue(srv.Id, out var cached) &&
+            DateTime.UtcNow - cached.FetchedAtUtc < UserCacheTtl)
+        {
+            return cached.UsersByName.TryGetValue(localUsername.Trim(), out var cachedId) ? cachedId : null;
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/Users");
+            req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey));
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var client = _httpClientFactory.CreateClient("MergerFin");
+            client.Timeout = TimeSpan.FromSeconds(10);
+            using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in doc.RootElement.EnumerateArray())
+                    {
+                        var name = el.TryGetProperty("Name", out var n) ? n.GetString() : null;
+                        var id = el.TryGetProperty("Id", out var i) ? i.GetString() : null;
+                        if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(id))
+                        {
+                            map[name.Trim()] = id.Trim();
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "MergerFin failed fetching /Users from {Server}", srv.Name);
+        }
+
+        _remoteUsersCache[srv.Id] = (DateTime.UtcNow, map);
+        return map.TryGetValue(localUsername.Trim(), out var resolvedId) ? resolvedId : null;
     }
 
     public async Task MarkPlayedAsync(
         RemoteServerConfig srv,
         string remoteUserId,
-        string accessToken,
         string remoteItemId,
         bool played,
         UpstreamSessionIdentity? identity,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(remoteUserId) || string.IsNullOrWhiteSpace(accessToken))
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(remoteUserId) || string.IsNullOrWhiteSpace(apiKey))
         {
             return;
         }
@@ -295,7 +340,7 @@ public class UpstreamClient
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
         var url = $"{baseUrl}/Users/{Uri.EscapeDataString(remoteUserId)}/PlayedItems/{Uri.EscapeDataString(remoteItemId)}";
         using var req = new HttpRequestMessage(played ? HttpMethod.Post : HttpMethod.Delete, url);
-        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(accessToken, identity));
+        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey, identity));
 
         try
         {
@@ -312,13 +357,13 @@ public class UpstreamClient
     public async Task MarkFavoriteAsync(
         RemoteServerConfig srv,
         string remoteUserId,
-        string accessToken,
         string remoteItemId,
         bool favorite,
         UpstreamSessionIdentity? identity,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(remoteUserId) || string.IsNullOrWhiteSpace(accessToken))
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(remoteUserId) || string.IsNullOrWhiteSpace(apiKey))
         {
             return;
         }
@@ -326,7 +371,7 @@ public class UpstreamClient
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
         var url = $"{baseUrl}/Users/{Uri.EscapeDataString(remoteUserId)}/FavoriteItems/{Uri.EscapeDataString(remoteItemId)}";
         using var req = new HttpRequestMessage(favorite ? HttpMethod.Post : HttpMethod.Delete, url);
-        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(accessToken, identity));
+        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey, identity));
 
         try
         {
@@ -342,13 +387,13 @@ public class UpstreamClient
 
     public async Task ReportPlaystateAsync(
         RemoteServerConfig srv,
-        string accessToken,
         string endpointPath,
         object body,
         UpstreamSessionIdentity? identity,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(accessToken))
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
             return;
         }
@@ -356,7 +401,7 @@ public class UpstreamClient
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
         var url = $"{baseUrl}{endpointPath}";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
-        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(accessToken, identity));
+        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey, identity));
         req.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
         try

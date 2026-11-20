@@ -5,19 +5,14 @@ using MediaBrowser.Model.Plugins;
 namespace Jellyfin.Plugin.MergerFin.Configuration;
 
 /// <summary>
-/// Persistent configuration for the MergerFin plugin.
+/// Persistent configuration for the MergerFin plugin (Full API Key mode).
 /// </summary>
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>
-    /// Configured remote Jellyfin servers to federate.
+    /// Configured remote Jellyfin servers to federate via API Key.
     /// </summary>
     public List<RemoteServerConfig> Servers { get; set; } = [];
-
-    /// <summary>
-    /// Optional per-user remote account mappings (Local Jellyfin User -> Remote Server Account).
-    /// </summary>
-    public List<UserAccountMapping> UserMappings { get; set; } = [];
 
     /// <summary>
     /// Optional directory where .strm files are generated for remote-only movies and episodes.
@@ -32,7 +27,8 @@ public class PluginConfiguration : BasePluginConfiguration
     public string LocalBaseUrl { get; set; } = "http://127.0.0.1:8096";
 
     /// <summary>
-    /// Propagate local playback progress, played state, and favorites back to remote servers.
+    /// Propagate local playback progress, played state, and favorites back to remote servers
+    /// by automatically matching remote users by username via API Key.
     /// </summary>
     public bool SyncWatchStateToUpstreams { get; set; } = true;
 
@@ -56,10 +52,14 @@ public class RemoteServerConfig
 
     public string BaseUrl { get; set; } = string.Empty;
 
-    public string Username { get; set; } = string.Empty;
+    /// <summary>
+    /// Jellyfin API Key created in Dashboard -> API Keys on the remote server.
+    /// </summary>
+    public string ApiKey { get; set; } = string.Empty;
 
-    public string RemoteUserId { get; set; } = string.Empty;
-
+    /// <summary>
+    /// Legacy fallback for existing XML configs migrated from v0.1.0-v0.1.3.
+    /// </summary>
     public string AccessToken { get; set; } = string.Empty;
 
     public int Priority { get; set; } = 100;
@@ -70,19 +70,9 @@ public class RemoteServerConfig
     public string StreamMode { get; set; } = "proxy";
 
     public bool Enabled { get; set; } = true;
-}
 
-public class UserAccountMapping
-{
-    public string LocalUserId { get; set; } = string.Empty;
-
-    public string LocalUsername { get; set; } = string.Empty;
-
-    public string ServerId { get; set; } = string.Empty;
-
-    public string RemoteUsername { get; set; } = string.Empty;
-
-    public string RemoteUserId { get; set; } = string.Empty;
-
-    public string AccessToken { get; set; } = string.Empty;
+    public string GetEffectiveApiKey()
+    {
+        return !string.IsNullOrWhiteSpace(ApiKey) ? ApiKey.Trim() : (AccessToken ?? string.Empty).Trim();
+    }
 }
