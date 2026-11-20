@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.1.0",
+        "changelog": "Fix configPage.html layout (proper Jellyfin .inputContainer/.selectContainer alignment) and replace ES6 template literals so Jellyfin globalize.translateHtml no longer mangles dropdown labels.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.1/mergerfin_0.1.1.0.zip",
+        "checksum": "bc72d893567969e87aef7b632596f4d9",
+        "timestamp": "2026-11-20T23:04:00Z"
+      },
+      {
         "version": "0.1.0.0",
         "changelog": "Initial release for Jellyfin 12.4: native IMediaSourceProvider multi-version injection, optional remote-only .strm sync, per-user upstream account mapping, real session identity forwarding, and watch-state sync.",
         "targetAbi": "12.4.0.0",

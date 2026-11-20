@@ -6,15 +6,72 @@
 </head>
 <body>
 <div id="MergerFinConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+  <style>
+    #MergerFinConfigPage .mf-wrap {
+      max-width: 820px;
+    }
+    #MergerFinConfigPage .mf-card {
+      padding: 16px 20px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 20px;
+    }
+    #MergerFinConfigPage .mf-status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    #MergerFinConfigPage .mf-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px 20px;
+    }
+    #MergerFinConfigPage .mf-grid-2 .inputContainer,
+    #MergerFinConfigPage .mf-grid-2 .selectContainer {
+      margin-bottom: 0;
+    }
+    #MergerFinConfigPage .mf-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    #MergerFinConfigPage .mf-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      flex-wrap: wrap;
+    }
+    #MergerFinConfigPage .mf-msg {
+      font-size: 0.92em;
+      margin-top: 8px;
+      min-height: 1.2em;
+    }
+    #MergerFinConfigPage .mf-actions {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+  </style>
+
   <div data-role="content">
-    <div class="content-primary">
+    <div class="content-primary mf-wrap">
       <h2>MergerFin — Remote Jellyfin Federation</h2>
       <p style="opacity:0.8;margin-bottom:1.2em;">
         Federate remote Jellyfin servers into your local Jellyfin libraries with native multi-version deduplication, per-user upstream account mapping, and watch-state sync.
       </p>
 
       <!-- Status & Sync Bar -->
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:12px 16px;border-radius:8px;background:rgba(255,255,255,0.05);margin-bottom:20px;">
+      <div class="mf-card mf-status-bar">
         <div>
           <strong>Catalog Index:</strong>
           <span id="mfStatusText">Loading...</span>
@@ -25,11 +82,11 @@
       </div>
 
       <!-- General Settings -->
-      <form id="mfGeneralForm" style="margin-bottom:28px;">
-        <h3>General Settings</h3>
+      <form id="mfGeneralForm" class="mf-card">
+        <h3 style="margin-top:0;">General Settings</h3>
         <div class="inputContainer">
           <label class="inputLabel inputLabelUnfocused" for="mfStrmPath">Remote-Only .strm Output Directory (optional)</label>
-          <input id="mfStrmPath" type="text" is="emby-input" placeholder="/media/mergerfin-remote (leave empty to only inject versions onto existing local items)" />
+          <input id="mfStrmPath" type="text" is="emby-input" placeholder="/media/mergerfin-remote" />
           <div class="fieldDescription">
             If set, MergerFin writes lightweight .strm files here for movies/episodes that exist only on remote servers. Add this folder to your Movies/Shows libraries in Jellyfin. Leave blank to never write .strm files.
           </div>
@@ -51,60 +108,88 @@
             <span>Sync local playback, played &amp; favorite state back to remote servers</span>
           </label>
         </div>
-        <button type="submit" is="emby-button" class="raised button-submit">
-          <span>Save General Settings</span>
-        </button>
+        <div class="mf-actions">
+          <button type="submit" is="emby-button" class="raised button-submit">
+            <span>Save General Settings</span>
+          </button>
+        </div>
       </form>
 
       <!-- Remote Servers Section -->
-      <div style="margin-bottom:28px;">
-        <h3>Remote Jellyfin Servers</h3>
-        <div id="mfServersList" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;"></div>
+      <div class="mf-card">
+        <h3 style="margin-top:0;">Remote Jellyfin Servers</h3>
+        <div id="mfServersList" class="mf-list"></div>
 
-        <div style="padding:14px 16px;border-radius:8px;background:rgba(255,255,255,0.04);">
-          <h4 style="margin-top:0;">Add Remote Server</h4>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
-            <input id="mfSrvName" type="text" is="emby-input" placeholder="Display Name (e.g. BelkaFlix)" />
-            <input id="mfSrvUrl" type="url" is="emby-input" placeholder="https://jelly.example.com" />
-            <input id="mfSrvUser" type="text" is="emby-input" placeholder="Username" />
-            <input id="mfSrvPass" type="password" is="emby-input" placeholder="Password" />
-            <input id="mfSrvPrio" type="number" is="emby-input" value="100" placeholder="Priority (100)" />
-            <select id="mfSrvMode" is="emby-select">
+        <h4 style="margin-top:18px;margin-bottom:12px;">Add Remote Server</h4>
+        <div class="mf-grid-2">
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfSrvName">Display Name</label>
+            <input id="mfSrvName" type="text" is="emby-input" placeholder="BelkaFlix" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfSrvUrl">Server Base URL</label>
+            <input id="mfSrvUrl" type="url" is="emby-input" placeholder="https://jelly.example.com" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfSrvUser">Upstream Username</label>
+            <input id="mfSrvUser" type="text" is="emby-input" placeholder="username" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfSrvPass">Upstream Password</label>
+            <input id="mfSrvPass" type="password" is="emby-input" placeholder="password" autocomplete="new-password" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfSrvPrio">Priority (lower = higher priority)</label>
+            <input id="mfSrvPrio" type="number" is="emby-input" value="100" />
+          </div>
+          <div class="selectContainer">
+            <label class="selectLabel" for="mfSrvMode">Stream Mode</label>
+            <select id="mfSrvMode" is="emby-select" class="emby-select-withcolor emby-select">
               <option value="proxy">proxy (through local Jellyfin)</option>
               <option value="redirect">redirect (HTTP 302)</option>
             </select>
           </div>
-          <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button id="mfAddSrvBtn" type="button" is="emby-button" class="raised button-submit">
-              <span>Test &amp; Add Server</span>
-            </button>
-            <span id="mfSrvMsg" style="font-size:0.9em;"></span>
-          </div>
+        </div>
+        <div class="mf-actions">
+          <button id="mfAddSrvBtn" type="button" is="emby-button" class="raised button-submit">
+            <span>Test &amp; Add Server</span>
+          </button>
+          <span id="mfSrvMsg" class="mf-msg"></span>
         </div>
       </div>
 
       <!-- Per-User Account Mappings -->
-      <div style="margin-bottom:24px;">
-        <h3>Per-User Remote Account Mappings</h3>
-        <p style="opacity:0.8;font-size:0.9em;">
+      <div class="mf-card">
+        <h3 style="margin-top:0;">Per-User Remote Account Mappings</h3>
+        <p style="opacity:0.8;font-size:0.9em;margin-top:0;">
           Optionally link a local Jellyfin user to their own account on a remote server so the remote server sees their real user &amp; watch history. Unmapped users automatically fall back to the server's default account.
         </p>
-        <div id="mfMappingsList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;"></div>
+        <div id="mfMappingsList" class="mf-list"></div>
 
-        <div style="padding:14px 16px;border-radius:8px;background:rgba(255,255,255,0.04);">
-          <h4 style="margin-top:0;">Link Local User to Remote Account</h4>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
-            <select id="mfMapLocalUser" is="emby-select"></select>
-            <select id="mfMapServer" is="emby-select"></select>
-            <input id="mfMapRemoteUser" type="text" is="emby-input" placeholder="Remote Username" />
-            <input id="mfMapRemotePass" type="password" is="emby-input" placeholder="Remote Password" />
+        <h4 style="margin-top:18px;margin-bottom:12px;">Link Local User to Remote Account</h4>
+        <div class="mf-grid-2">
+          <div class="selectContainer">
+            <label class="selectLabel" for="mfMapLocalUser">Local Jellyfin User</label>
+            <select id="mfMapLocalUser" is="emby-select" class="emby-select-withcolor emby-select"></select>
           </div>
-          <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button id="mfAddMapBtn" type="button" is="emby-button" class="raised button-submit">
-              <span>Test &amp; Link Account</span>
-            </button>
-            <span id="mfMapMsg" style="font-size:0.9em;"></span>
+          <div class="selectContainer">
+            <label class="selectLabel" for="mfMapServer">Remote Server</label>
+            <select id="mfMapServer" is="emby-select" class="emby-select-withcolor emby-select"></select>
           </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfMapRemoteUser">Remote Username</label>
+            <input id="mfMapRemoteUser" type="text" is="emby-input" placeholder="remote username" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfMapRemotePass">Remote Password</label>
+            <input id="mfMapRemotePass" type="password" is="emby-input" placeholder="remote password" autocomplete="new-password" />
+          </div>
+        </div>
+        <div class="mf-actions">
+          <button id="mfAddMapBtn" type="button" is="emby-button" class="raised button-submit">
+            <span>Test &amp; Link Account</span>
+          </button>
+          <span id="mfMapMsg" class="mf-msg"></span>
         </div>
       </div>
     </div>
@@ -112,164 +197,209 @@
 
   <script type="text/javascript">
     (function () {
-      const PLUGIN_ID = '7f3b9c42-6a1e-4b8d-9e2a-5c1f8a3d7b01';
-      let currentConfig = null;
-      let localUsers = [];
+      var PLUGIN_ID = '7f3b9c42-6a1e-4b8d-9e2a-5c1f8a3d7b01';
+      var currentConfig = null;
+      var localUsers = [];
 
       function esc(s) {
-        const d = document.createElement('div');
+        var d = document.createElement('div');
         d.textContent = s == null ? '' : String(s);
         return d.innerHTML;
       }
 
-      async function apiCall(path, method = 'GET', body = null) {
-        const url = ApiClient.getUrl(path);
-        const opts = {
-          type: method,
+      function apiCall(path, method, body) {
+        var url = ApiClient.getUrl(path);
+        var opts = {
+          type: method || 'GET',
           url: url,
           dataType: 'json'
         };
-        if (body !== null) {
+        if (body !== undefined && body !== null) {
           opts.data = JSON.stringify(body);
           opts.contentType = 'application/json';
         }
         return ApiClient.ajax(opts);
       }
 
-      async function refreshStatus(page) {
-        try {
-          const st = await apiCall('MergerFin/Status');
-          const el = page.querySelector('#mfStatusText');
+      function refreshStatus(page) {
+        return apiCall('MergerFin/Status', 'GET').then(function (st) {
+          var el = page.querySelector('#mfStatusText');
           if (st.running) {
             el.textContent = 'Syncing...';
           } else if (st.lastSyncUtc) {
-            el.textContent = `${st.totalSources} sources (${st.movies} movies, ${st.episodes} episodes) — Last sync: ${new Date(st.lastSyncUtc).toLocaleString()}${st.lastError ? ' [Warn: ' + st.lastError + ']' : ''}`;
+            var warn = st.lastError ? ' [Warn: ' + st.lastError + ']' : '';
+            el.textContent = st.totalSources + ' sources (' + st.movies + ' movies, ' + st.episodes + ' episodes) — Last sync: ' + new Date(st.lastSyncUtc).toLocaleString() + warn;
           } else {
             el.textContent = 'Not synced yet';
           }
-        } catch (e) {
+        }).catch(function () {
           page.querySelector('#mfStatusText').textContent = 'Unavailable';
-        }
+        });
       }
 
       function renderServers(page) {
-        const list = page.querySelector('#mfServersList');
-        const servers = (currentConfig && currentConfig.Servers) || [];
+        var list = page.querySelector('#mfServersList');
+        var servers = (currentConfig && currentConfig.Servers) || [];
         if (!servers.length) {
           list.innerHTML = '<div style="opacity:0.7;">No remote servers configured yet.</div>';
         } else {
-          list.innerHTML = servers.map((s) => `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-radius:6px;background:rgba(255,255,255,0.06);flex-wrap:wrap;">
-              <div>
-                <strong>${esc(s.Name)}</strong>
-                <span style="opacity:0.7;margin-left:8px;">${esc(s.BaseUrl)}</span>
-                <div style="font-size:0.85em;opacity:0.8;">
-                  Default user: ${esc(s.Username)} | Priority: ${esc(s.Priority)} | Mode: ${esc(s.StreamMode || 'proxy')} | ${s.Enabled ? 'Enabled' : 'Disabled'}
-                </div>
-              </div>
-              <button type="button" is="emby-button" class="raised" data-del-server="${esc(s.Id)}">Remove</button>
-            </div>
-          `).join('');
+          var html = '';
+          for (var i = 0; i < servers.length; i++) {
+            var s = servers[i];
+            html += '<div class="mf-row">' +
+              '<div>' +
+                '<strong>' + esc(s.Name) + '</strong>' +
+                '<span style="opacity:0.7;margin-left:8px;">' + esc(s.BaseUrl) + '</span>' +
+                '<div style="font-size:0.85em;opacity:0.8;margin-top:2px;">' +
+                  'Default user: ' + esc(s.Username) +
+                  ' | Priority: ' + esc(s.Priority) +
+                  ' | Mode: ' + esc(s.StreamMode || 'proxy') +
+                  ' | ' + (s.Enabled ? 'Enabled' : 'Disabled') +
+                '</div>' +
+              '</div>' +
+              '<button type="button" is="emby-button" class="raised" data-del-server="' + esc(s.Id) + '">Remove</button>' +
+            '</div>';
+          }
+          list.innerHTML = html;
         }
 
-        const srvSelect = page.querySelector('#mfMapServer');
-        srvSelect.innerHTML = servers.map((s) => `<option value="${esc(s.Id)}">${esc(s.Name)}</option>`).join('');
+        var srvSelect = page.querySelector('#mfMapServer');
+        srvSelect.innerHTML = '';
+        if (!servers.length) {
+          var emptyOpt = document.createElement('option');
+          emptyOpt.value = '';
+          emptyOpt.textContent = '-- Add a remote server first --';
+          srvSelect.appendChild(emptyOpt);
+        } else {
+          for (var j = 0; j < servers.length; j++) {
+            var opt = document.createElement('option');
+            opt.value = servers[j].Id;
+            opt.textContent = servers[j].Name;
+            srvSelect.appendChild(opt);
+          }
+        }
       }
 
       function renderMappings(page) {
-        const list = page.querySelector('#mfMappingsList');
-        const mappings = (currentConfig && currentConfig.UserMappings) || [];
-        const servers = (currentConfig && currentConfig.Servers) || [];
-        const srvName = (id) => (servers.find((s) => s.Id === id) || {}).Name || id;
+        var list = page.querySelector('#mfMappingsList');
+        var mappings = (currentConfig && currentConfig.UserMappings) || [];
+        var servers = (currentConfig && currentConfig.Servers) || [];
+
+        function srvName(id) {
+          for (var i = 0; i < servers.length; i++) {
+            if (servers[i].Id === id) return servers[i].Name;
+          }
+          return id;
+        }
 
         if (!mappings.length) {
           list.innerHTML = '<div style="opacity:0.7;">No per-user mappings configured (all users use server default account).</div>';
         } else {
-          list.innerHTML = mappings.map((m, idx) => `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-radius:6px;background:rgba(255,255,255,0.06);flex-wrap:wrap;">
-              <div>
-                <strong>${esc(m.LocalUsername || m.LocalUserId)}</strong>
-                &rarr; <strong>${esc(srvName(m.ServerId))}</strong> : <code>${esc(m.RemoteUsername)}</code>
-              </div>
-              <button type="button" is="emby-button" class="raised" data-del-map="${idx}">Unlink</button>
-            </div>
-          `).join('');
+          var html = '';
+          for (var k = 0; k < mappings.length; k++) {
+            var m = mappings[k];
+            html += '<div class="mf-row">' +
+              '<div>' +
+                '<strong>' + esc(m.LocalUsername || m.LocalUserId) + '</strong>' +
+                ' &rarr; <strong>' + esc(srvName(m.ServerId)) + '</strong> : <code>' + esc(m.RemoteUsername) + '</code>' +
+              '</div>' +
+              '<button type="button" is="emby-button" class="raised" data-del-map="' + k + '">Unlink</button>' +
+            '</div>';
+          }
+          list.innerHTML = html;
         }
       }
 
-      async function saveConfig() {
-        await ApiClient.updatePluginConfiguration(PLUGIN_ID, currentConfig);
-        Dashboard.processPluginConfigurationUpdateResult();
+      function saveConfig() {
+        return ApiClient.updatePluginConfiguration(PLUGIN_ID, currentConfig).then(function () {
+          Dashboard.processPluginConfigurationUpdateResult();
+        });
       }
 
-      async function loadPage(page) {
+      function loadPage(page) {
         Dashboard.showLoadingMsg();
-        try {
-          currentConfig = await ApiClient.getPluginConfiguration(PLUGIN_ID);
+        return Promise.all([
+          ApiClient.getPluginConfiguration(PLUGIN_ID),
+          ApiClient.getUsers()
+        ]).then(function (results) {
+          currentConfig = results[0] || {};
           currentConfig.Servers = currentConfig.Servers || [];
           currentConfig.UserMappings = currentConfig.UserMappings || [];
+          localUsers = results[1] || [];
 
           page.querySelector('#mfStrmPath').value = currentConfig.StrmOutputPath || '';
           page.querySelector('#mfLocalBaseUrl').value = currentConfig.LocalBaseUrl || 'http://127.0.0.1:8096';
           page.querySelector('#mfEnableMultiVersion').checked = currentConfig.EnableMultiVersionInjection !== false;
           page.querySelector('#mfSyncWatchState').checked = currentConfig.SyncWatchStateToUpstreams !== false;
 
-          localUsers = await ApiClient.getUsers();
-          const userSelect = page.querySelector('#mfMapLocalUser');
-          userSelect.innerHTML = localUsers.map((u) => `<option value="${esc(u.Id)}">${esc(u.Name)}</option>`).join('');
+          var userSelect = page.querySelector('#mfMapLocalUser');
+          userSelect.innerHTML = '';
+          for (var i = 0; i < localUsers.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = localUsers[i].Id;
+            opt.textContent = localUsers[i].Name;
+            userSelect.appendChild(opt);
+          }
 
           renderServers(page);
           renderMappings(page);
-          await refreshStatus(page);
-        } finally {
+          return refreshStatus(page);
+        }).finally(function () {
           Dashboard.hideLoadingMsg();
-        }
+        });
       }
 
-      const page = document.querySelector('#MergerFinConfigPage');
-      page.addEventListener('pageshow', () => loadPage(page));
+      var page = document.querySelector('#MergerFinConfigPage');
+      page.addEventListener('pageshow', function () {
+        loadPage(page);
+      });
 
-      page.querySelector('#mfGeneralForm').addEventListener('submit', async (e) => {
+      page.querySelector('#mfGeneralForm').addEventListener('submit', function (e) {
         e.preventDefault();
         currentConfig.StrmOutputPath = page.querySelector('#mfStrmPath').value.trim();
         currentConfig.LocalBaseUrl = page.querySelector('#mfLocalBaseUrl').value.trim() || 'http://127.0.0.1:8096';
         currentConfig.EnableMultiVersionInjection = page.querySelector('#mfEnableMultiVersion').checked;
         currentConfig.SyncWatchStateToUpstreams = page.querySelector('#mfSyncWatchState').checked;
-        await saveConfig();
+        saveConfig();
       });
 
-      page.querySelector('#mfSyncNowBtn').addEventListener('click', async () => {
-        try {
-          await apiCall('MergerFin/Sync', 'POST');
+      page.querySelector('#mfSyncNowBtn').addEventListener('click', function () {
+        apiCall('MergerFin/Sync', 'POST').then(function () {
           Dashboard.alert('MergerFin sync started in background.');
-          setTimeout(() => refreshStatus(page), 1500);
-        } catch (err) {
+          setTimeout(function () { refreshStatus(page); }, 1500);
+        }).catch(function (err) {
           Dashboard.alert('Failed to start sync: ' + err);
-        }
+        });
       });
 
-      page.querySelector('#mfAddSrvBtn').addEventListener('click', async () => {
-        const msg = page.querySelector('#mfSrvMsg');
-        const name = page.querySelector('#mfSrvName').value.trim();
-        const baseUrl = page.querySelector('#mfSrvUrl').value.trim();
-        const username = page.querySelector('#mfSrvUser').value.trim();
-        const password = page.querySelector('#mfSrvPass').value;
-        const priority = parseInt(page.querySelector('#mfSrvPrio').value, 10) || 100;
-        const streamMode = page.querySelector('#mfSrvMode').value || 'proxy';
+      page.querySelector('#mfAddSrvBtn').addEventListener('click', function () {
+        var msg = page.querySelector('#mfSrvMsg');
+        var name = page.querySelector('#mfSrvName').value.trim();
+        var baseUrl = page.querySelector('#mfSrvUrl').value.trim();
+        var username = page.querySelector('#mfSrvUser').value.trim();
+        var password = page.querySelector('#mfSrvPass').value;
+        var priority = parseInt(page.querySelector('#mfSrvPrio').value, 10) || 100;
+        var streamMode = page.querySelector('#mfSrvMode').value || 'proxy';
 
         if (!baseUrl || !username || !password) {
           msg.textContent = 'Base URL, Username, and Password are required.';
           return;
         }
         msg.textContent = 'Testing connection...';
-        try {
-          const probe = await apiCall('MergerFin/Servers/Test', 'POST', { baseUrl, username, password });
+        apiCall('MergerFin/Servers/Test', 'POST', {
+          baseUrl: baseUrl,
+          username: username,
+          password: password
+        }).then(function (probe) {
           if (!probe.online || probe.error || !probe.accessToken) {
             msg.textContent = 'Error: ' + (probe.error || 'Authentication failed');
             return;
           }
+          var newId = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID().replace(/-/g, '')
+            : String(Date.now());
           currentConfig.Servers.push({
-            Id: (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : String(Date.now())),
+            Id: newId,
             Name: name || probe.serverName || baseUrl,
             BaseUrl: baseUrl.replace(/\/+$/, ''),
             Username: username,
@@ -279,56 +409,63 @@
             StreamMode: streamMode,
             Enabled: true
           });
-          await saveConfig();
-          page.querySelector('#mfSrvName').value = '';
-          page.querySelector('#mfSrvUrl').value = '';
-          page.querySelector('#mfSrvUser').value = '';
-          page.querySelector('#mfSrvPass').value = '';
-          msg.textContent = `Connected to "${probe.serverName}" (v${probe.version}, ${probe.latencyMs}ms) and saved!`;
-          renderServers(page);
-        } catch (err) {
+          return saveConfig().then(function () {
+            page.querySelector('#mfSrvName').value = '';
+            page.querySelector('#mfSrvUrl').value = '';
+            page.querySelector('#mfSrvUser').value = '';
+            page.querySelector('#mfSrvPass').value = '';
+            msg.textContent = 'Connected to "' + probe.serverName + '" (v' + probe.version + ', ' + probe.latencyMs + 'ms) and saved!';
+            renderServers(page);
+          });
+        }).catch(function () {
           msg.textContent = 'Connection test failed.';
-        }
+        });
       });
 
-      page.querySelector('#mfServersList').addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-del-server]');
+      page.querySelector('#mfServersList').addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-del-server]');
         if (!btn) return;
-        const id = btn.dataset.delServer;
-        currentConfig.Servers = currentConfig.Servers.filter((s) => s.Id !== id);
-        currentConfig.UserMappings = currentConfig.UserMappings.filter((m) => m.ServerId !== id);
-        await saveConfig();
-        renderServers(page);
-        renderMappings(page);
+        var id = btn.dataset.delServer;
+        currentConfig.Servers = currentConfig.Servers.filter(function (s) { return s.Id !== id; });
+        currentConfig.UserMappings = currentConfig.UserMappings.filter(function (m) { return m.ServerId !== id; });
+        saveConfig().then(function () {
+          renderServers(page);
+          renderMappings(page);
+        });
       });
 
-      page.querySelector('#mfAddMapBtn').addEventListener('click', async () => {
-        const msg = page.querySelector('#mfMapMsg');
-        const localUserId = page.querySelector('#mfMapLocalUser').value;
-        const serverId = page.querySelector('#mfMapServer').value;
-        const remoteUser = page.querySelector('#mfMapRemoteUser').value.trim();
-        const remotePass = page.querySelector('#mfMapRemotePass').value;
+      page.querySelector('#mfAddMapBtn').addEventListener('click', function () {
+        var msg = page.querySelector('#mfMapMsg');
+        var localUserId = page.querySelector('#mfMapLocalUser').value;
+        var serverId = page.querySelector('#mfMapServer').value;
+        var remoteUser = page.querySelector('#mfMapRemoteUser').value.trim();
+        var remotePass = page.querySelector('#mfMapRemotePass').value;
 
-        const srv = (currentConfig.Servers || []).find((s) => s.Id === serverId);
-        const lu = localUsers.find((u) => u.Id === localUserId);
+        var srv = null;
+        for (var i = 0; i < currentConfig.Servers.length; i++) {
+          if (currentConfig.Servers[i].Id === serverId) { srv = currentConfig.Servers[i]; break; }
+        }
+        var lu = null;
+        for (var j = 0; j < localUsers.length; j++) {
+          if (localUsers[j].Id === localUserId) { lu = localUsers[j]; break; }
+        }
         if (!srv || !lu || !remoteUser || !remotePass) {
           msg.textContent = 'Select user & server and enter remote credentials.';
           return;
         }
         msg.textContent = 'Authenticating...';
-        try {
-          const probe = await apiCall('MergerFin/Servers/Test', 'POST', {
-            baseUrl: srv.BaseUrl,
-            username: remoteUser,
-            password: remotePass
-          });
+        apiCall('MergerFin/Servers/Test', 'POST', {
+          baseUrl: srv.BaseUrl,
+          username: remoteUser,
+          password: remotePass
+        }).then(function (probe) {
           if (!probe.online || probe.error || !probe.accessToken) {
             msg.textContent = 'Error: ' + (probe.error || 'Authentication failed');
             return;
           }
-          currentConfig.UserMappings = currentConfig.UserMappings.filter(
-            (m) => !(m.LocalUserId === localUserId && m.ServerId === serverId)
-          );
+          currentConfig.UserMappings = currentConfig.UserMappings.filter(function (m) {
+            return !(m.LocalUserId === localUserId && m.ServerId === serverId);
+          });
           currentConfig.UserMappings.push({
             LocalUserId: localUserId,
             LocalUsername: lu.Name,
@@ -337,23 +474,25 @@
             RemoteUserId: probe.remoteUserId || '',
             AccessToken: probe.accessToken
           });
-          await saveConfig();
-          page.querySelector('#mfMapRemoteUser').value = '';
-          page.querySelector('#mfMapRemotePass').value = '';
-          msg.textContent = `Linked ${lu.Name} -> ${srv.Name} (${remoteUser})`;
-          renderMappings(page);
-        } catch (err) {
+          return saveConfig().then(function () {
+            page.querySelector('#mfMapRemoteUser').value = '';
+            page.querySelector('#mfMapRemotePass').value = '';
+            msg.textContent = 'Linked ' + lu.Name + ' -> ' + srv.Name + ' (' + remoteUser + ')';
+            renderMappings(page);
+          });
+        }).catch(function () {
           msg.textContent = 'Authentication failed.';
-        }
+        });
       });
 
-      page.querySelector('#mfMappingsList').addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-del-map]');
+      page.querySelector('#mfMappingsList').addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-del-map]');
         if (!btn) return;
-        const idx = parseInt(btn.dataset.delMap, 10);
+        var idx = parseInt(btn.dataset.delMap, 10);
         currentConfig.UserMappings.splice(idx, 1);
-        await saveConfig();
-        renderMappings(page);
+        saveConfig().then(function () {
+          renderMappings(page);
+        });
       });
     })();
   </script>
