@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.MergerFin.Configuration;
 using Jellyfin.Plugin.MergerFin.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
@@ -19,11 +20,14 @@ namespace Jellyfin.Plugin.MergerFin.Services;
 
 /// <summary>
 /// Listens to local Jellyfin playback & watch-state events and propagates them cleanly
-/// to remote Jellyfin servers with strict loop-prevention for meshed MergerFin setups.
+/// to remote Jellyfin servers with live progress updates, guaranteed stop cleanup,
+/// stale-session reaping, and strict loop-prevention for meshed MergerFin setups.
 /// </summary>
-public class WatchStateSyncService : IHostedService
+public class WatchStateSyncService : IHostedService, IDisposable
 {
     private static readonly TimeSpan UserDataCooldown = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ProgressRelayInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan StaleSessionTimeout = TimeSpan.FromSeconds(90);
 
     private readonly ISessionManager _sessionManager;
     private readonly IUserDataManager _userDataManager;
@@ -32,8 +36,30 @@ public class WatchStateSyncService : IHostedService
     private readonly UpstreamClient _client;
     private readonly ILogger<WatchStateSyncService> _logger;
 
-    // Tracks recent UserData propagations to prevent echo loops between meshed servers.
     private readonly ConcurrentDictionary<string, DateTime> _recentUserData = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ActiveRemotePlayback> _activeSessions = new(StringComparer.OrdinalIgnoreCase);
+    private Timer? _reaperTimer;
+
+    private sealed class ActiveRemotePlayback
+    {
+        public required RemoteServerConfig Server { get; init; }
+
+        public required IndexedRemoteSource Source { get; init; }
+
+        public required string PlaySessionId { get; init; }
+
+        public required UpstreamSessionIdentity Identity { get; init; }
+
+        public required string LocalUsername { get; init; }
+
+        public long LastPositionTicks { get; set; }
+
+        public bool LastPaused { get; set; }
+
+        public DateTime LastActivityUtc { get; set; }
+
+        public DateTime LastProgressSentUtc { get; set; }
+    }
 
     public WatchStateSyncService(
         ISessionManager sessionManager,
@@ -54,25 +80,43 @@ public class WatchStateSyncService : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _sessionManager.PlaybackStart += OnPlaybackStart;
+        _sessionManager.PlaybackProgress += OnPlaybackProgress;
         _sessionManager.PlaybackStopped += OnPlaybackStopped;
         _userDataManager.UserDataSaved += OnUserDataSaved;
+        _reaperTimer = new Timer(ReapStaleSessions, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _sessionManager.PlaybackStart -= OnPlaybackStart;
+        _sessionManager.PlaybackProgress -= OnPlaybackProgress;
         _sessionManager.PlaybackStopped -= OnPlaybackStopped;
         _userDataManager.UserDataSaved -= OnUserDataSaved;
+        _reaperTimer?.Dispose();
+        _reaperTimer = null;
+
+        // Best-effort close any active remote sessions on shutdown.
+        foreach (var kv in _activeSessions.ToArray())
+        {
+            if (_activeSessions.TryRemove(kv.Key, out var active))
+            {
+                _ = SendStoppedAsync(active, active.LastPositionTicks, false);
+            }
+        }
+
         return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+        _reaperTimer?.Dispose();
     }
 
     private static bool IsRelayedOrSystemSession(SessionInfo? session)
     {
         if (session == null || session.UserId == Guid.Empty)
         {
-            // API-key sessions have UserId == Guid.Empty ("User null").
-            // Never re-relay them or two meshed MergerFin servers will ping-pong infinitely!
             return true;
         }
 
@@ -101,18 +145,219 @@ public class WatchStateSyncService : IHostedService
             return;
         }
 
-        _ = Task.Run(() => PropagatePlaybackEventAsync(e, "/Sessions/Playing"));
+        var activeSource = ResolveActiveRemoteSource(e);
+        if (activeSource == null || e.Session == null)
+        {
+            return;
+        }
+
+        var srv = cfg.Servers.FirstOrDefault(s =>
+            s.Enabled && string.Equals(s.Id, activeSource.ServerId, StringComparison.OrdinalIgnoreCase));
+        if (srv == null)
+        {
+            return;
+        }
+
+        var sessionKey = e.Session.Id;
+        var now = DateTime.UtcNow;
+        var active = new ActiveRemotePlayback
+        {
+            Server = srv,
+            Source = activeSource,
+            PlaySessionId = !string.IsNullOrWhiteSpace(e.PlaySessionId) ? e.PlaySessionId : Guid.NewGuid().ToString("N"),
+            LocalUsername = e.Session.UserName ?? string.Empty,
+            Identity = new UpstreamSessionIdentity
+            {
+                LocalUsername = e.Session.UserName ?? string.Empty,
+                ClientName = e.Session.Client ?? "Jellyfin",
+                DeviceName = e.Session.DeviceName ?? string.Empty,
+                DeviceId = e.Session.DeviceId ?? string.Empty
+            },
+            LastPositionTicks = e.PlaybackPositionTicks ?? 0,
+            LastPaused = e.IsPaused,
+            LastActivityUtc = now,
+            LastProgressSentUtc = now
+        };
+
+        // If this local session was previously playing a different remote item, cleanly close the old one first.
+        if (_activeSessions.TryGetValue(sessionKey, out var previous) &&
+            !string.Equals(previous.PlaySessionId, active.PlaySessionId, StringComparison.OrdinalIgnoreCase))
+        {
+            _ = Task.Run(() => SendStoppedAsync(previous, previous.LastPositionTicks, false));
+        }
+
+        _activeSessions[sessionKey] = active;
+
+        _ = Task.Run(async () =>
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _client.ReportPlaystateAsync(
+                active.Server,
+                "/Sessions/Playing",
+                new
+                {
+                    ItemId = active.Source.RemoteItemId,
+                    MediaSourceId = active.Source.RemoteMediaSourceId,
+                    PlaySessionId = active.PlaySessionId,
+                    PositionTicks = active.LastPositionTicks,
+                    IsPaused = active.LastPaused
+                },
+                active.Identity,
+                cts.Token).ConfigureAwait(false);
+        });
+    }
+
+    private void OnPlaybackProgress(object? sender, PlaybackProgressEventArgs e)
+    {
+        var cfg = Plugin.Instance?.Configuration;
+        if (cfg == null || !cfg.SyncWatchStateToUpstreams || e.Session == null || IsRelayedOrSystemSession(e.Session))
+        {
+            return;
+        }
+
+        if (!_activeSessions.TryGetValue(e.Session.Id, out var active))
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        var posTicks = e.PlaybackPositionTicks ?? active.LastPositionTicks;
+        var isPaused = e.IsPaused;
+        var pauseChanged = isPaused != active.LastPaused;
+
+        active.LastPositionTicks = posTicks;
+        active.LastPaused = isPaused;
+        active.LastActivityUtc = now;
+
+        if (!pauseChanged && now - active.LastProgressSentUtc < ProgressRelayInterval)
+        {
+            return;
+        }
+
+        active.LastProgressSentUtc = now;
+
+        _ = Task.Run(async () =>
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _client.ReportPlaystateAsync(
+                active.Server,
+                "/Sessions/Playing/Progress",
+                new
+                {
+                    ItemId = active.Source.RemoteItemId,
+                    MediaSourceId = active.Source.RemoteMediaSourceId,
+                    PlaySessionId = active.PlaySessionId,
+                    PositionTicks = posTicks,
+                    IsPaused = isPaused
+                },
+                active.Identity,
+                cts.Token).ConfigureAwait(false);
+        });
     }
 
     private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
     {
         var cfg = Plugin.Instance?.Configuration;
-        if (cfg == null || !cfg.SyncWatchStateToUpstreams || e.Item == null || IsRelayedOrSystemSession(e.Session))
+        if (cfg == null || !cfg.SyncWatchStateToUpstreams || e.Session == null || IsRelayedOrSystemSession(e.Session))
         {
             return;
         }
 
-        _ = Task.Run(() => PropagatePlaybackEventAsync(e, "/Sessions/Playing/Stopped"));
+        if (!_activeSessions.TryRemove(e.Session.Id, out var active))
+        {
+            // Fallback in case PlaybackStart was missed (e.g. plugin reloaded mid-playback).
+            var activeSource = ResolveActiveRemoteSource(e);
+            if (activeSource == null)
+            {
+                return;
+            }
+
+            var srv = cfg.Servers.FirstOrDefault(s =>
+                s.Enabled && string.Equals(s.Id, activeSource.ServerId, StringComparison.OrdinalIgnoreCase));
+            if (srv == null)
+            {
+                return;
+            }
+
+            active = new ActiveRemotePlayback
+            {
+                Server = srv,
+                Source = activeSource,
+                PlaySessionId = e.PlaySessionId ?? string.Empty,
+                LocalUsername = e.Session.UserName ?? string.Empty,
+                Identity = new UpstreamSessionIdentity
+                {
+                    LocalUsername = e.Session.UserName ?? string.Empty,
+                    ClientName = e.Session.Client ?? "Jellyfin",
+                    DeviceName = e.Session.DeviceName ?? string.Empty,
+                    DeviceId = e.Session.DeviceId ?? string.Empty
+                },
+                LastPositionTicks = e.PlaybackPositionTicks ?? 0,
+                LastActivityUtc = DateTime.UtcNow,
+                LastProgressSentUtc = DateTime.UtcNow
+            };
+        }
+
+        var finalPos = e.PlaybackPositionTicks ?? active.LastPositionTicks;
+        var runtime = active.Source.RunTimeTicks > 0 ? active.Source.RunTimeTicks : (e.Item?.RunTimeTicks ?? 0);
+        var playedToCompletion = e.PlayedToCompletion || (runtime > 0 && finalPos >= (runtime * 9) / 10);
+
+        _ = Task.Run(() => SendStoppedAsync(active, finalPos, playedToCompletion));
+    }
+
+    private void ReapStaleSessions(object? state)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var kv in _activeSessions.ToArray())
+        {
+            if (now - kv.Value.LastActivityUtc > StaleSessionTimeout)
+            {
+                if (_activeSessions.TryRemove(kv.Key, out var stale))
+                {
+                    _ = Task.Run(() => SendStoppedAsync(stale, stale.LastPositionTicks, false));
+                }
+            }
+        }
+    }
+
+    private async Task SendStoppedAsync(ActiveRemotePlayback active, long positionTicks, bool playedToCompletion)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _client.ReportPlaystateAsync(
+                active.Server,
+                "/Sessions/Playing/Stopped",
+                new
+                {
+                    ItemId = active.Source.RemoteItemId,
+                    MediaSourceId = active.Source.RemoteMediaSourceId,
+                    PlaySessionId = active.PlaySessionId,
+                    PositionTicks = positionTicks
+                },
+                active.Identity,
+                cts.Token).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(active.LocalUsername))
+            {
+                var remoteUserId = await _client.ResolveRemoteUserIdByUsernameAsync(active.Server, active.LocalUsername, cts.Token).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(remoteUserId))
+                {
+                    await _client.UpdateUserItemDataAsync(
+                        active.Server,
+                        remoteUserId,
+                        active.Source.RemoteItemId,
+                        positionTicks,
+                        playedToCompletion,
+                        active.Identity,
+                        cts.Token).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "MergerFin SendStoppedAsync failed for server {Server}", active.Server.Name);
+        }
     }
 
     private void OnUserDataSaved(object? sender, UserDataSaveEventArgs e)
@@ -130,7 +375,6 @@ public class WatchStateSyncService : IHostedService
             return;
         }
 
-        // Deduplicate rapid repeated events (e.g. from meshed servers) with a 15s cooldown.
         var dedupKey = $"{e.UserId:N}:{e.Item.Id:N}:{e.SaveReason}:{e.UserData.Played}:{e.UserData.IsFavorite}";
         var now = DateTime.UtcNow;
         if (_recentUserData.TryGetValue(dedupKey, out var last) && now - last < UserDataCooldown)
@@ -142,85 +386,8 @@ public class WatchStateSyncService : IHostedService
         _ = Task.Run(() => PropagateUserDataAsync(e));
     }
 
-    private async Task PropagatePlaybackEventAsync(PlaybackProgressEventArgs e, string endpoint)
-    {
-        try
-        {
-            var cfg = Plugin.Instance?.Configuration;
-            if (cfg == null || e.Item == null || e.Session == null)
-            {
-                return;
-            }
-
-            // Only report live playback to the SINGLE remote server actually serving this stream!
-            // If the user is playing a local file on this server, do NOT spawn fake playback cards on remote servers.
-            var activeSource = ResolveActiveRemoteSource(e);
-            if (activeSource == null)
-            {
-                return;
-            }
-
-            var srv = cfg.Servers.FirstOrDefault(s =>
-                s.Enabled && string.Equals(s.Id, activeSource.ServerId, StringComparison.OrdinalIgnoreCase));
-            if (srv == null)
-            {
-                return;
-            }
-
-            var localUsername = e.Session.UserName ?? string.Empty;
-            var identity = new UpstreamSessionIdentity
-            {
-                LocalUsername = localUsername,
-                ClientName = e.Session.Client ?? "Jellyfin",
-                DeviceName = e.Session.DeviceName ?? string.Empty,
-                DeviceId = e.Session.DeviceId ?? string.Empty
-            };
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await _client.ReportPlaystateAsync(
-                srv,
-                endpoint,
-                new
-                {
-                    ItemId = activeSource.RemoteItemId,
-                    MediaSourceId = activeSource.RemoteMediaSourceId,
-                    PlaySessionId = e.PlaySessionId ?? string.Empty,
-                    PositionTicks = e.PlaybackPositionTicks ?? 0
-                },
-                identity,
-                cts.Token).ConfigureAwait(false);
-
-            // On playback stop, also sync resume position / played state to the matched remote user's UserData.
-            if (string.Equals(endpoint, "/Sessions/Playing/Stopped", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(localUsername))
-            {
-                var remoteUserId = await _client.ResolveRemoteUserIdByUsernameAsync(srv, localUsername, cts.Token).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(remoteUserId))
-                {
-                    var posTicks = e.PlaybackPositionTicks ?? 0;
-                    var runtime = activeSource.RunTimeTicks > 0 ? activeSource.RunTimeTicks : (e.Item.RunTimeTicks ?? 0);
-                    var playedToCompletion = (e is PlaybackStopEventArgs stopArgs && stopArgs.PlayedToCompletion) ||
-                                             (runtime > 0 && posTicks >= (runtime * 9) / 10);
-                    await _client.UpdateUserItemDataAsync(
-                        srv,
-                        remoteUserId,
-                        activeSource.RemoteItemId,
-                        posTicks,
-                        playedToCompletion,
-                        identity,
-                        cts.Token).ConfigureAwait(false);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "MergerFin playback event propagation failed");
-        }
-    }
-
     private IndexedRemoteSource? ResolveActiveRemoteSource(PlaybackProgressEventArgs e)
     {
-        // 1. Check MediaSourceId injected by MergerFinMediaSourceProvider ("mf_<sourceId>").
         if (!string.IsNullOrWhiteSpace(e.MediaSourceId) &&
             e.MediaSourceId.StartsWith("mf_", StringComparison.OrdinalIgnoreCase))
         {
@@ -231,7 +398,6 @@ public class WatchStateSyncService : IHostedService
             }
         }
 
-        // 2. Check if the played item is a MergerFin .strm stub pointing to /MergerFin/Stream/<sourceId>.
         var itemPath = e.Item?.Path;
         if (!string.IsNullOrWhiteSpace(itemPath) &&
             itemPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) &&
