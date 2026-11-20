@@ -66,13 +66,23 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
+	var matchedSourceID string
 	if _, err := h.db.GetItemByID(ctx, itemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "Item not found")
+			if src, srcErr := h.db.GetSourceByID(ctx, itemID); srcErr == nil && src != nil {
+				matchedSourceID = src.SourceID
+				itemID = src.VirtualItemID
+				_, err = h.db.GetItemByID(ctx, itemID)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "Item not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "Failed to load item")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "Failed to load item")
-		return
 	}
 
 	sources, err := h.db.ListSourcesByVirtualItemID(ctx, itemID)
@@ -113,6 +123,7 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 	requestedMSID := firstNonEmpty(
 		queryParamCI(q, "MediaSourceId"),
 		mapStringCI(bodyMap, "MediaSourceId"),
+		matchedSourceID,
 	)
 	if requestedMSID != "" {
 		if norm, err := idgen.NormalizeID(requestedMSID); err == nil {
@@ -811,6 +822,7 @@ func (h *apiHandler) handleSessionsPlaying(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "Invalid ItemId")
 		return
 	}
+	itemID, _, _ = h.resolveItemOrSource(r.Context(), itemID)
 	if err := h.watchManager().OnPlaying(r.Context(), ac.User.ID, itemID, payload.PlaySessionID, payload.PositionTicks); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to update playing state")
 		return
@@ -834,6 +846,7 @@ func (h *apiHandler) handleSessionsPlayingProgress(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "Invalid ItemId")
 		return
 	}
+	itemID, _, _ = h.resolveItemOrSource(r.Context(), itemID)
 	if err := h.watchManager().OnProgress(r.Context(), ac.User.ID, itemID, payload.PlaySessionID, payload.PositionTicks, payload.IsPaused); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to update playback progress")
 		return
@@ -857,6 +870,7 @@ func (h *apiHandler) handleSessionsPlayingStopped(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, "Invalid ItemId")
 		return
 	}
+	itemID, _, _ = h.resolveItemOrSource(r.Context(), itemID)
 	if err := h.watchManager().OnStopped(r.Context(), ac.User.ID, itemID, payload.PlaySessionID, payload.PositionTicks); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to finalize stopped playback")
 		return
@@ -893,11 +907,19 @@ func (h *apiHandler) resolveWatchStateTarget(w http.ResponseWriter, r *http.Requ
 
 	if _, err := h.db.GetItemByID(r.Context(), itemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "Item not found")
+			if src, srcErr := h.db.GetSourceByID(r.Context(), itemID); srcErr == nil && src != nil {
+				itemID = src.VirtualItemID
+				_, err = h.db.GetItemByID(r.Context(), itemID)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "Item not found")
+				return "", "", false
+			}
+			writeError(w, http.StatusInternalServerError, "Failed to load item")
 			return "", "", false
 		}
-		writeError(w, http.StatusInternalServerError, "Failed to load item")
-		return "", "", false
 	}
 
 	return userID, itemID, true

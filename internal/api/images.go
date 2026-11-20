@@ -135,12 +135,20 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 	item, err := h.db.GetItemByID(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "item not found")
+			if src, srcErr := h.db.GetSourceByID(ctx, itemID); srcErr == nil && src != nil {
+				itemID = src.VirtualItemID
+				item, err = h.db.GetItemByID(ctx, itemID)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "item not found")
+				return
+			}
+			h.logger.Error("lookup item for image failed", "item_id", itemID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to lookup item")
 			return
 		}
-		h.logger.Error("lookup item for image failed", "item_id", itemID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to lookup item")
-		return
 	}
 
 	var serverID, remoteID string

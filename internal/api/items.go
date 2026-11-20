@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -158,14 +159,27 @@ func (h *apiHandler) handleGetItems(w http.ResponseWriter, r *http.Request) {
 
 	serverID, _ := h.serverIdentity(ctx)
 
-	// Handle direct library lookup via ?Ids=<libraryID>
+	// Handle direct library lookup via ?Ids=<libraryID> and resolve media source IDs to their parent virtual item.
 	var libDTOs []BaseItemDto
+	preferredSourceByItem := make(map[string]string)
 	if len(filter.IDs) > 0 {
+		resolvedIDs := make([]string, 0, len(filter.IDs))
+		seenIDs := make(map[string]struct{}, len(filter.IDs))
 		for _, id := range filter.IDs {
 			if lib, err := h.db.GetLibraryByID(ctx, id); err == nil {
 				libDTOs = append(libDTOs, libraryToDTO(ctx, h.db, serverID, userID, *lib))
+				continue
+			}
+			virtID, srcID, _ := h.resolveItemOrSource(ctx, id)
+			if srcID != "" {
+				preferredSourceByItem[virtID] = srcID
+			}
+			if _, dup := seenIDs[virtID]; !dup {
+				seenIDs[virtID] = struct{}{}
+				resolvedIDs = append(resolvedIDs, virtID)
 			}
 		}
+		filter.IDs = resolvedIDs
 	}
 
 	items, total, err := h.db.QueryItems(ctx, filter)
@@ -180,6 +194,14 @@ func (h *apiHandler) handleGetItems(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("build item DTOs failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to format items")
 		return
+	}
+
+	if len(preferredSourceByItem) > 0 {
+		for i := range dtos {
+			if prefSrc, ok := preferredSourceByItem[dtos[i].Id]; ok {
+				prioritizeMediaSource(&dtos[i], prefSrc)
+			}
+		}
 	}
 
 	if len(libDTOs) > 0 {
@@ -218,15 +240,26 @@ func (h *apiHandler) handleGetItemByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var preferredSourceID string
 	item, err := h.db.GetItemByID(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "item not found")
+			// Jellyfin clients (notably jellyfin-web's version selector & playbackManager)
+			// treat individual MediaSource.Id values as selectable item IDs.
+			if src, srcErr := h.db.GetSourceByID(ctx, itemID); srcErr == nil && src != nil {
+				preferredSourceID = src.SourceID
+				item, err = h.db.GetItemByID(ctx, src.VirtualItemID)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "item not found")
+				return
+			}
+			h.logger.Error("get item by id failed", "item_id", itemID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to get item")
 			return
 		}
-		h.logger.Error("get item by id failed", "item_id", itemID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to get item")
-		return
 	}
 
 	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, []db.VirtualItem{*item}, true)
@@ -236,7 +269,43 @@ func (h *apiHandler) handleGetItemByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if preferredSourceID != "" {
+		prioritizeMediaSource(&dtos[0], preferredSourceID)
+	}
+
 	writeJSON(w, http.StatusOK, dtos[0])
+}
+
+// resolveItemOrSource resolves an ID that may be either a virtual_item_id or an item_sources.source_id.
+func (h *apiHandler) resolveItemOrSource(ctx context.Context, id string) (virtualItemID string, matchedSourceID string, ok bool) {
+	if _, err := h.db.GetItemByID(ctx, id); err == nil {
+		return id, "", true
+	}
+	if src, err := h.db.GetSourceByID(ctx, id); err == nil && src != nil {
+		return src.VirtualItemID, src.SourceID, true
+	}
+	return id, "", false
+}
+
+func prioritizeMediaSource(dto *BaseItemDto, sourceID string) {
+	if dto == nil || sourceID == "" || len(dto.MediaSources) == 0 {
+		return
+	}
+	idx := -1
+	for i, ms := range dto.MediaSources {
+		if ms.Id == sourceID {
+			idx = i
+			break
+		}
+	}
+	if idx > 0 {
+		selected := dto.MediaSources[idx]
+		copy(dto.MediaSources[1:idx+1], dto.MediaSources[0:idx])
+		dto.MediaSources[0] = selected
+	}
+	if idx >= 0 && dto.MediaSources[0].RunTimeTicks > 0 {
+		dto.RunTimeTicks = dto.MediaSources[0].RunTimeTicks
+	}
 }
 
 func (h *apiHandler) handleGetLatestItems(w http.ResponseWriter, r *http.Request) {

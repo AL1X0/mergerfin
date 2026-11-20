@@ -91,23 +91,27 @@ func (s *Streamer) HandleDirectStream(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if found.VirtualItemID != itemID {
+		if found.VirtualItemID != itemID && found.SourceID != itemID {
 			http.Error(w, "media source does not belong to item", http.StatusNotFound)
 			return
 		}
 		src = found
 	} else {
-		sources, err := s.db.ListSourcesByVirtualItemID(ctx, itemID)
-		if err != nil {
-			s.logger.Error("list sources failed", "item_id", itemID, "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+		if bySource, srcErr := s.db.GetSourceByID(ctx, itemID); srcErr == nil && bySource != nil {
+			src = bySource
+		} else {
+			sources, err := s.db.ListSourcesByVirtualItemID(ctx, itemID)
+			if err != nil {
+				s.logger.Error("list sources failed", "item_id", itemID, "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if len(sources) == 0 {
+				http.Error(w, "no media sources available", http.StatusNotFound)
+				return
+			}
+			src = &sources[0]
 		}
-		if len(sources) == 0 {
-			http.Error(w, "no media sources available", http.StatusNotFound)
-			return
-		}
-		src = &sources[0]
 	}
 
 	userID := s.resolveStreamUserID(ctx, r, nil)
