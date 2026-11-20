@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "7f3b9c42-6a1e-4b8d-9e2a-5c1f8a3d7b01",
+    "name": "MergerFin",
+    "description": "Federates remote Jellyfin servers into your local Jellyfin libraries with native multi-version deduplication, per-user upstream account mapping, and watch-state sync.",
+    "overview": "Unify multiple remote Jellyfin servers directly inside your existing Jellyfin server.",
+    "owner": "AL1X0",
+    "category": "General",
+    "versions": [
+      {
+        "version": "0.1.0.0",
+        "changelog": "Initial release for Jellyfin 12.4: native IMediaSourceProvider multi-version injection, optional remote-only .strm sync, per-user upstream account mapping, real session identity forwarding, and watch-state sync.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.0/mergerfin_0.1.0.0.zip",
+        "checksum": "aa1dd9b2c344f85ba0046782e41fff2f",
+        "timestamp": "2026-11-20T22:53:00Z"
+      }
+    ]
+  }
+]
