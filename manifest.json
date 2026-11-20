@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.7.0",
+        "changelog": "Backfill missing RunTimeTicks on remote .strm items during sync (fixes Continue Watching progress bars and 90% auto-complete), and sync resume PlaybackPositionTicks + explicit Played=true/position=0 reset to matched remote users via POST /UserItems/{id}/UserData.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.7/mergerfin_0.1.7.0.zip",
+        "checksum": "9eca182fdf45c6efb2ca2e780b1ff8a6",
+        "timestamp": "2026-11-21T00:18:00Z"
+      },
+      {
         "version": "0.1.6.0",
         "changelog": "Mesh anti-loop catalog sync: ignore remote MergerFin .strm stubs, mf_* MediaSources, /MergerFin/Stream/* URLs, and remote HTTP streams so two or more Jellyfin servers syncing each other only exchange their real local files.",
         "targetAbi": "12.4.0.0",

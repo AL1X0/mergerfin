@@ -323,6 +323,44 @@ public class UpstreamClient
         return map.TryGetValue(localUsername.Trim(), out var resolvedId) ? resolvedId : null;
     }
 
+    public async Task UpdateUserItemDataAsync(
+        RemoteServerConfig srv,
+        string remoteUserId,
+        string remoteItemId,
+        long playbackPositionTicks,
+        bool played,
+        UpstreamSessionIdentity? identity,
+        CancellationToken ct)
+    {
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(remoteUserId) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            return;
+        }
+
+        var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
+        var url = $"{baseUrl}/UserItems/{Uri.EscapeDataString(remoteItemId)}/UserData?userId={Uri.EscapeDataString(remoteUserId)}";
+        var payload = new
+        {
+            PlaybackPositionTicks = played ? 0 : playbackPositionTicks,
+            Played = played
+        };
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey, identity));
+        req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient("MergerFin");
+            client.Timeout = TimeSpan.FromSeconds(10);
+            using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "MergerFin UpdateUserItemData upstream failed for server {Server}", srv.Name);
+        }
+    }
+
     public async Task MarkPlayedAsync(
         RemoteServerConfig srv,
         string remoteUserId,

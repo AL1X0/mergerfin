@@ -94,6 +94,7 @@ public class CatalogSyncService
             if (!string.IsNullOrWhiteSpace(cfg.StrmOutputPath))
             {
                 WriteStrmStubsForRemoteOnlyItems(cfg, allSources, ct);
+                await BackfillStrmRuntimesAsync(cfg.StrmOutputPath, ct).ConfigureAwait(false);
             }
 
             progress?.Report(100.0);
@@ -410,6 +411,67 @@ public class CatalogSyncService
         }
 
         return keys;
+    }
+
+    private async Task BackfillStrmRuntimesAsync(string strmRoot, CancellationToken ct)
+    {
+        var fullStrmRoot = Path.GetFullPath(strmRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode],
+            Recursive = true
+        });
+
+        var updated = 0;
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (item.RunTimeTicks is > 0 || string.IsNullOrWhiteSpace(item.Path))
+            {
+                continue;
+            }
+
+            if (!Path.GetFullPath(item.Path).StartsWith(fullStrmRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            List<IndexedRemoteSource> matches;
+            if (item is Movie)
+            {
+                matches = _store.FindMatches("Movie", item.ProviderIds);
+            }
+            else if (item is Episode ep)
+            {
+                matches = _store.FindMatches("Episode", ep.ProviderIds, ep.Series?.ProviderIds, ep.ParentIndexNumber, ep.IndexNumber);
+            }
+            else
+            {
+                continue;
+            }
+
+            var runtime = matches.FirstOrDefault(m => m.RunTimeTicks > 0)?.RunTimeTicks ?? 0;
+            if (runtime <= 0)
+            {
+                continue;
+            }
+
+            item.RunTimeTicks = runtime;
+            try
+            {
+                await _libraryManager.UpdateItemAsync(item, item.GetParent(), ItemUpdateType.MetadataEdit, ct).ConfigureAwait(false);
+                updated++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "MergerFin failed updating RunTimeTicks for {Name}", item.Name);
+            }
+        }
+
+        if (updated > 0)
+        {
+            _logger.LogInformation("MergerFin backfilled RunTimeTicks on {Count} remote .strm items", updated);
+        }
     }
 
     private static string? BuildStrmFilePath(string root, IndexedRemoteSource src)

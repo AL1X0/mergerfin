@@ -189,6 +189,28 @@ public class WatchStateSyncService : IHostedService
                 },
                 identity,
                 cts.Token).ConfigureAwait(false);
+
+            // On playback stop, also sync resume position / played state to the matched remote user's UserData.
+            if (string.Equals(endpoint, "/Sessions/Playing/Stopped", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(localUsername))
+            {
+                var remoteUserId = await _client.ResolveRemoteUserIdByUsernameAsync(srv, localUsername, cts.Token).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(remoteUserId))
+                {
+                    var posTicks = e.PlaybackPositionTicks ?? 0;
+                    var runtime = activeSource.RunTimeTicks > 0 ? activeSource.RunTimeTicks : (e.Item.RunTimeTicks ?? 0);
+                    var playedToCompletion = (e is PlaybackStopEventArgs stopArgs && stopArgs.PlayedToCompletion) ||
+                                             (runtime > 0 && posTicks >= (runtime * 9) / 10);
+                    await _client.UpdateUserItemDataAsync(
+                        srv,
+                        remoteUserId,
+                        activeSource.RemoteItemId,
+                        posTicks,
+                        playedToCompletion,
+                        identity,
+                        cts.Token).ConfigureAwait(false);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -291,6 +313,10 @@ public class WatchStateSyncService : IHostedService
                 if (e.SaveReason == UserDataSaveReason.TogglePlayed || e.SaveReason == UserDataSaveReason.PlaybackFinished)
                 {
                     await _client.MarkPlayedAsync(srv, remoteUserId, first.RemoteItemId, e.UserData.Played, identity, cts.Token).ConfigureAwait(false);
+                    if (e.UserData.Played)
+                    {
+                        await _client.UpdateUserItemDataAsync(srv, remoteUserId, first.RemoteItemId, 0, true, identity, cts.Token).ConfigureAwait(false);
+                    }
                 }
 
                 if (e.SaveReason == UserDataSaveReason.UpdateUserRating)
