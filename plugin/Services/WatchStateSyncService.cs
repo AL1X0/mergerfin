@@ -221,15 +221,17 @@ public class WatchStateSyncService : IHostedService, IDisposable
         }
 
         var now = DateTime.UtcNow;
-        var posTicks = e.PlaybackPositionTicks ?? active.LastPositionTicks;
+        var prevTicks = active.LastPositionTicks;
+        var posTicks = e.PlaybackPositionTicks ?? prevTicks;
         var isPaused = e.IsPaused;
         var pauseChanged = isPaused != active.LastPaused;
+        var seeked = Math.Abs(posTicks - prevTicks) > TimeSpan.FromSeconds(15).Ticks;
 
         active.LastPositionTicks = posTicks;
         active.LastPaused = isPaused;
         active.LastActivityUtc = now;
 
-        if (!pauseChanged && now - active.LastProgressSentUtc < ProgressRelayInterval)
+        if (!pauseChanged && !seeked && now - active.LastProgressSentUtc < ProgressRelayInterval)
         {
             return;
         }
@@ -248,7 +250,8 @@ public class WatchStateSyncService : IHostedService, IDisposable
                     MediaSourceId = active.Source.RemoteMediaSourceId,
                     PlaySessionId = active.PlaySessionId,
                     PositionTicks = posTicks,
-                    IsPaused = isPaused
+                    IsPaused = isPaused,
+                    CanSeek = true
                 },
                 active.Identity,
                 cts.Token).ConfigureAwait(false);

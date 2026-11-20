@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.9.0",
+        "changelog": "Relay timeline seeks (>15s jumps) immediately to remote dashboards without waiting for the 10s progress interval, and set CanSeek=true on relayed playstate.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.9/mergerfin_0.1.9.0.zip",
+        "checksum": "7892337d2ec7500834112b2e5d0f8258",
+        "timestamp": "2026-11-21T00:30:00Z"
+      },
+      {
         "version": "0.1.8.0",
         "changelog": "Hook PlaybackProgress (live timecode & pause updates every 10s on remote dashboard), track active remote playback sessions by local SessionId so PlaybackStopped always closes the exact remote session card, and add a 90s stale-session reaper so cards never stay stuck.",
         "targetAbi": "12.4.0.0",
