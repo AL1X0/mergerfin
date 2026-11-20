@@ -3,6 +3,7 @@ package syncengine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/AL1X0/mergerfin/internal/auth"
@@ -421,5 +423,131 @@ func TestEngineMultiServerSyncDeduplicationAndPruning(t *testing.T) {
 	remoteUD, err := upClient.GetUserItemData(ctx, *decB, "b-interstellar")
 	if err != nil || !remoteUD.Played || !remoteUD.IsFavorite || remoteUD.PlayCount != 2 {
 		t.Fatalf("GetUserItemData failed: ud=%+v err=%v", remoteUD, err)
+	}
+}
+
+func TestSyncServerBatchedAndUserDataChangedIsolated(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:", "MergerFinBatchTest")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	adminUser, err := auth.EnsureAdminUser(ctx, database, "admin", "admin-pass")
+	if err != nil {
+		t.Fatalf("EnsureAdminUser: %v", err)
+	}
+
+	pool, err := upstream.NewPool(database, "batch-secret", slog.Default())
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	// Build 160 movies (>320 write ops including sources -> exercises multiple 250-op chunks).
+	remoteItems := make([]upstream.RemoteItem, 0, 160)
+	for i := 0; i < 160; i++ {
+		remoteItems = append(remoteItems, upstream.RemoteItem{
+			ID:             fmt.Sprintf("rem-movie-%d", i),
+			Name:           fmt.Sprintf("Batch Movie %03d", i),
+			Type:           "Movie",
+			ProductionYear: 2000 + (i % 25),
+			ProviderIDs:    map[string]string{"Tmdb": strconv.Itoa(100000 + i)},
+			MediaSources: []upstream.RemoteMediaSource{
+				{
+					ID:        fmt.Sprintf("rem-ms-%d", i),
+					Container: "mp4",
+					Bitrate:   3000000,
+				},
+			},
+		})
+	}
+
+	var fetchCalls atomic.Int64
+	srvHTTP := newMockJellyfinServer(t, "BatchSrv", "user-remote-1", "tok-1", func() []upstream.RemoteItem {
+		fetchCalls.Add(1)
+		return remoteItems
+	})
+	defer srvHTTP.Close()
+
+	srv, err := pool.AddOrUpdateServer(ctx, "", "BatchSrv", srvHTTP.URL, "admin", "pass", 10, "proxy", true)
+	if err != nil {
+		t.Fatalf("AddOrUpdateServer: %v", err)
+	}
+	if err := database.UpsertServer(ctx, db.UpstreamServer{
+		ID: srv.ID, Name: srv.Name, BaseURL: srv.BaseURL, Username: srv.Username,
+		RemoteUserID: "user-remote-1", AccessToken: srv.AccessToken, Priority: srv.Priority,
+		StreamMode: srv.StreamMode, Enabled: true, IsOnline: true,
+	}); err != nil {
+		t.Fatalf("UpsertServer RemoteUserID: %v", err)
+	}
+	decSrv, err := pool.GetDecryptedServer(ctx, srv.ID)
+	if err != nil {
+		t.Fatalf("GetDecryptedServer: %v", err)
+	}
+
+	ws := &spyBroadcaster{}
+	engine := NewEngine(database, pool, upstream.NewClient(), ws, slog.Default())
+
+	// SyncServer runs with checkExistingInDB=true (uses GetAllItemsMap + 250-op chunks).
+	if err := engine.SyncServer(ctx, *decSrv); err != nil {
+		t.Fatalf("SyncServer: %v", err)
+	}
+	_, total, err := database.QueryItems(ctx, db.ItemFilter{IncludeTypes: []string{"Movie"}})
+	if err != nil || total != 160 {
+		t.Fatalf("expected 160 synced movies, got total=%d err=%v", total, err)
+	}
+
+	beforeCalls := fetchCalls.Load()
+
+	// 1. UserDataChanged for matching RemoteUserID (PascalCase & camelCase) must update DB without FetchAllItems.
+	engine.SyncUserDataEvent(ctx, *decSrv, map[string]any{
+		"UserId": "USER-REMOTE-1",
+		"UserDataList": []map[string]any{
+			{
+				"ItemId":                "rem-movie-0",
+				"Played":                true,
+				"PlaybackPositionTicks": 0,
+				"PlayCount":             1,
+				"IsFavorite":            true,
+				"LastPlayedDate":        "2026-11-20T20:00:00Z",
+			},
+			{
+				"itemId":                "rem-movie-1",
+				"played":                false,
+				"playbackPositionTicks": 42000000,
+				"playCount":             0,
+				"isFavorite":            false,
+			},
+		},
+	})
+
+	if fetchCalls.Load() != beforeCalls {
+		t.Fatalf("SyncUserDataEvent must not trigger FetchAllItems: calls went from %d to %d", beforeCalls, fetchCalls.Load())
+	}
+
+	vid0 := idgen.VirtualItemID(ResolveMovieKey("Batch Movie 000", 2000, map[string]string{"tmdb": "100000"}))
+	ud0, err := database.GetUserItemData(ctx, adminUser.ID, vid0)
+	if err != nil || !ud0.Played || !ud0.IsFavorite || ud0.PlayCount != 1 {
+		t.Fatalf("expected movie 0 userdata updated, got %+v err=%v", ud0, err)
+	}
+
+	vid1 := idgen.VirtualItemID(ResolveMovieKey("Batch Movie 001", 2001, map[string]string{"tmdb": "100001"}))
+	ud1, err := database.GetUserItemData(ctx, adminUser.ID, vid1)
+	if err != nil || ud1.PlaybackPositionTicks != 42000000 {
+		t.Fatalf("expected movie 1 playback position updated, got %+v err=%v", ud1, err)
+	}
+
+	// 2. Mismatched UserId must be ignored.
+	engine.SyncUserDataEvent(ctx, *decSrv, map[string]any{
+		"UserId": "someone-else",
+		"UserDataList": []map[string]any{
+			{"ItemId": "rem-movie-2", "Played": true, "PlayCount": 3},
+		},
+	})
+	vid2 := idgen.VirtualItemID(ResolveMovieKey("Batch Movie 002", 2002, map[string]string{"tmdb": "100002"}))
+	ud2, err := database.GetUserItemData(ctx, adminUser.ID, vid2)
+	if err != nil || ud2.Played || ud2.PlayCount != 0 {
+		t.Fatalf("expected mismatched UserId event to be ignored, got %+v err=%v", ud2, err)
 	}
 }

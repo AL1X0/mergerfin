@@ -176,6 +176,52 @@ func defaultJSON(val, fallback string) string {
 	return val
 }
 
+const maxBindIDs = 400
+
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// WithWriteTx executes fn inside an exclusive IMMEDIATE write transaction on the writer pool.
+func (d *DB) WithWriteTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func normalizeDistinctIDs(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, id := range raw {
+		var clean string
+		if norm, err := idgen.NormalizeID(id); err == nil {
+			clean = norm
+		} else {
+			clean = strings.TrimSpace(id)
+		}
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
 func placeholders(n int) string {
 	if n <= 0 {
 		return ""
@@ -187,7 +233,7 @@ func placeholders(n int) string {
 
 func (d *DB) GetSetting(ctx context.Context, key string) (string, error) {
 	var val string
-	err := d.sqlDB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
+	err := d.reader().QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +267,7 @@ func (d *DB) CreateUser(ctx context.Context, u ProxyUser) error {
 }
 
 func (d *DB) GetUserByID(ctx context.Context, id string) (*ProxyUser, error) {
-	u, err := scanProxyUser(d.sqlDB.QueryRowContext(ctx, `
+	u, err := scanProxyUser(d.reader().QueryRowContext(ctx, `
 		SELECT id, username, password_hash, is_admin, created_at
 		FROM proxy_users WHERE id = ?
 	`, id))
@@ -232,7 +278,7 @@ func (d *DB) GetUserByID(ctx context.Context, id string) (*ProxyUser, error) {
 }
 
 func (d *DB) GetUserByUsername(ctx context.Context, username string) (*ProxyUser, error) {
-	u, err := scanProxyUser(d.sqlDB.QueryRowContext(ctx, `
+	u, err := scanProxyUser(d.reader().QueryRowContext(ctx, `
 		SELECT id, username, password_hash, is_admin, created_at
 		FROM proxy_users WHERE username = ?
 	`, username))
@@ -243,7 +289,7 @@ func (d *DB) GetUserByUsername(ctx context.Context, username string) (*ProxyUser
 }
 
 func (d *DB) ListUsers(ctx context.Context) ([]ProxyUser, error) {
-	rows, err := d.sqlDB.QueryContext(ctx, `
+	rows, err := d.reader().QueryContext(ctx, `
 		SELECT id, username, password_hash, is_admin, created_at
 		FROM proxy_users ORDER BY created_at ASC, username ASC
 	`)
@@ -282,7 +328,7 @@ func (d *DB) UpdateUserPassword(ctx context.Context, id, passwordHash string) er
 
 func (d *DB) CountUsers(ctx context.Context) (int, error) {
 	var count int
-	err := d.sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM proxy_users`).Scan(&count)
+	err := d.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM proxy_users`).Scan(&count)
 	return count, err
 }
 
@@ -305,7 +351,7 @@ func (d *DB) UpsertSession(ctx context.Context, s ProxySession) error {
 
 func (d *DB) GetSessionByToken(ctx context.Context, token string) (*ProxySession, error) {
 	var s ProxySession
-	err := d.sqlDB.QueryRowContext(ctx, `
+	err := d.reader().QueryRowContext(ctx, `
 		SELECT token, user_id, device_id, client_name, device_name, app_version, last_seen_at
 		FROM proxy_sessions WHERE token = ?
 	`, token).Scan(&s.Token, &s.UserID, &s.DeviceID, &s.ClientName, &s.DeviceName, &s.AppVersion, &s.LastSeenAt)
@@ -329,7 +375,7 @@ func (d *DB) DeleteSession(ctx context.Context, token string) error {
 
 func (d *DB) GetDisplayPreferences(ctx context.Context, userID, prefID, client string) (string, error) {
 	var payload string
-	err := d.sqlDB.QueryRowContext(ctx, `
+	err := d.reader().QueryRowContext(ctx, `
 		SELECT json_payload FROM display_preferences
 		WHERE user_id = ? AND pref_id = ? AND client = ?
 	`, userID, prefID, client).Scan(&payload)
@@ -445,7 +491,7 @@ func (d *DB) DeleteServer(ctx context.Context, id string) error {
 }
 
 func (d *DB) GetServerByID(ctx context.Context, id string) (*UpstreamServer, error) {
-	srv, err := scanUpstreamServer(d.sqlDB.QueryRowContext(ctx, `SELECT `+upstreamSelectCols+` FROM upstream_servers WHERE id = ?`, id))
+	srv, err := scanUpstreamServer(d.reader().QueryRowContext(ctx, `SELECT `+upstreamSelectCols+` FROM upstream_servers WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +500,7 @@ func (d *DB) GetServerByID(ctx context.Context, id string) (*UpstreamServer, err
 
 func (d *DB) listServersWhere(ctx context.Context, where string) ([]UpstreamServer, error) {
 	q := `SELECT ` + upstreamSelectCols + ` FROM upstream_servers ` + where + ` ORDER BY priority ASC, name ASC`
-	rows, err := d.sqlDB.QueryContext(ctx, q)
+	rows, err := d.reader().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +546,7 @@ func (d *DB) UpdateServerSyncState(ctx context.Context, id string, lastSyncAt ti
 // --- VirtualLibraries ---
 
 func (d *DB) ListLibraries(ctx context.Context) ([]VirtualLibrary, error) {
-	rows, err := d.sqlDB.QueryContext(ctx, `SELECT id, name, collection_type FROM virtual_libraries ORDER BY name ASC`)
+	rows, err := d.reader().QueryContext(ctx, `SELECT id, name, collection_type FROM virtual_libraries ORDER BY name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +565,7 @@ func (d *DB) ListLibraries(ctx context.Context) ([]VirtualLibrary, error) {
 
 func (d *DB) GetLibraryByID(ctx context.Context, id string) (*VirtualLibrary, error) {
 	var lib VirtualLibrary
-	err := d.sqlDB.QueryRowContext(ctx, `SELECT id, name, collection_type FROM virtual_libraries WHERE id = ?`, id).
+	err := d.reader().QueryRowContext(ctx, `SELECT id, name, collection_type FROM virtual_libraries WHERE id = ?`, id).
 		Scan(&lib.ID, &lib.Name, &lib.CollectionType)
 	if err != nil {
 		return nil, err
@@ -566,7 +612,15 @@ func scanVirtualItems(rows *sql.Rows) ([]VirtualItem, error) {
 }
 
 func (d *DB) UpsertItem(ctx context.Context, item VirtualItem) error {
-	_, err := d.sqlDB.ExecContext(ctx, `
+	return upsertItemExec(ctx, d.sqlDB, item)
+}
+
+func (d *DB) UpsertItemTx(ctx context.Context, tx *sql.Tx, item VirtualItem) error {
+	return upsertItemExec(ctx, tx, item)
+}
+
+func upsertItemExec(ctx context.Context, exec dbExecer, item VirtualItem) error {
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO virtual_items(
 			id, library_id, parent_id, series_id, season_id, item_type, canonical_key,
 			name, sort_name, original_title, overview, tagline,
@@ -615,6 +669,35 @@ func (d *DB) UpsertItem(ctx context.Context, item VirtualItem) error {
 			img_backdrop_remote_id = excluded.img_backdrop_remote_id,
 			date_created = excluded.date_created,
 			updated_at = CURRENT_TIMESTAMP
+		WHERE virtual_items.library_id IS NOT excluded.library_id
+			OR virtual_items.parent_id IS NOT excluded.parent_id
+			OR virtual_items.series_id IS NOT excluded.series_id
+			OR virtual_items.season_id IS NOT excluded.season_id
+			OR virtual_items.item_type IS NOT excluded.item_type
+			OR virtual_items.canonical_key IS NOT excluded.canonical_key
+			OR virtual_items.name IS NOT excluded.name
+			OR virtual_items.sort_name IS NOT excluded.sort_name
+			OR virtual_items.original_title IS NOT excluded.original_title
+			OR virtual_items.overview IS NOT excluded.overview
+			OR virtual_items.tagline IS NOT excluded.tagline
+			OR virtual_items.production_year IS NOT excluded.production_year
+			OR virtual_items.premiere_date IS NOT excluded.premiere_date
+			OR virtual_items.community_rating IS NOT excluded.community_rating
+			OR virtual_items.official_rating IS NOT excluded.official_rating
+			OR virtual_items.index_number IS NOT excluded.index_number
+			OR virtual_items.parent_index_number IS NOT excluded.parent_index_number
+			OR virtual_items.run_time_ticks IS NOT excluded.run_time_ticks
+			OR virtual_items.series_name IS NOT excluded.series_name
+			OR virtual_items.season_name IS NOT excluded.season_name
+			OR virtual_items.genres_json IS NOT excluded.genres_json
+			OR virtual_items.studios_json IS NOT excluded.studios_json
+			OR virtual_items.people_json IS NOT excluded.people_json
+			OR virtual_items.provider_ids_json IS NOT excluded.provider_ids_json
+			OR virtual_items.img_primary_server_id IS NOT excluded.img_primary_server_id
+			OR virtual_items.img_primary_remote_id IS NOT excluded.img_primary_remote_id
+			OR virtual_items.img_backdrop_server_id IS NOT excluded.img_backdrop_server_id
+			OR virtual_items.img_backdrop_remote_id IS NOT excluded.img_backdrop_remote_id
+			OR virtual_items.date_created IS NOT excluded.date_created
 	`,
 		item.ID, item.LibraryID, item.ParentID, item.SeriesID, item.SeasonID, item.ItemType, item.CanonicalKey,
 		item.Name, item.SortName, item.OriginalTitle, item.Overview, item.Tagline,
@@ -628,11 +711,29 @@ func (d *DB) UpsertItem(ctx context.Context, item VirtualItem) error {
 }
 
 func (d *DB) GetItemByID(ctx context.Context, id string) (*VirtualItem, error) {
-	it, err := scanVirtualItem(d.sqlDB.QueryRowContext(ctx, `SELECT `+itemSelectCols+` FROM virtual_items vi WHERE vi.id = ?`, id))
+	it, err := scanVirtualItem(d.reader().QueryRowContext(ctx, `SELECT `+itemSelectCols+` FROM virtual_items vi WHERE vi.id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
 	return &it, nil
+}
+
+func (d *DB) GetAllItemsMap(ctx context.Context) (map[string]VirtualItem, error) {
+	rows, err := d.reader().QueryContext(ctx, `SELECT `+itemSelectCols+` FROM virtual_items vi`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]VirtualItem)
+	for rows.Next() {
+		it, err := scanVirtualItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[it.ID] = it
+	}
+	return out, rows.Err()
 }
 
 // sanitizeFTSQuery turns arbitrary user input into a safe FTS5 MATCH expression.
@@ -761,7 +862,7 @@ func (d *DB) QueryItems(ctx context.Context, f ItemFilter) ([]VirtualItem, int, 
 
 	var total int
 	countSQL := `SELECT COUNT(*) ` + fromClause + whereClause
-	if err := d.sqlDB.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := d.reader().QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count items: %w", err)
 	}
 
@@ -805,7 +906,7 @@ func (d *DB) QueryItems(ctx context.Context, f ItemFilter) ([]VirtualItem, int, 
 		queryArgs = append(queryArgs, f.StartIndex)
 	}
 
-	rows, err := d.sqlDB.QueryContext(ctx, querySQL, queryArgs...)
+	rows, err := d.reader().QueryContext(ctx, querySQL, queryArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query items: %w", err)
 	}
@@ -850,7 +951,7 @@ func (d *DB) GetLatestItems(ctx context.Context, userID, parentID string, includ
 	sqlStr += ` ORDER BY vi.date_created DESC, vi.updated_at DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := d.sqlDB.QueryContext(ctx, sqlStr, args...)
+	rows, err := d.reader().QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -888,7 +989,7 @@ func (d *DB) GetResumeItems(ctx context.Context, userID, parentID string, includ
 		ORDER BY uid.last_played_at DESC, vi.updated_at DESC
 		LIMIT ?`
 
-	rows, err := d.sqlDB.QueryContext(ctx, sqlStr, args...)
+	rows, err := d.reader().QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -916,7 +1017,7 @@ func (d *DB) GetFilters(ctx context.Context, parentID string, includeTypes []str
 		whereSQL = " WHERE " + strings.Join(where, " AND ")
 	}
 
-	genreRows, err := d.sqlDB.QueryContext(ctx, `
+	genreRows, err := d.reader().QueryContext(ctx, `
 		SELECT DISTINCT j.value
 		FROM virtual_items vi, json_each(vi.genres_json) j
 		`+whereSQL+`
@@ -941,7 +1042,7 @@ func (d *DB) GetFilters(ctx context.Context, parentID string, includeTypes []str
 
 	yearWhere := append([]string(nil), where...)
 	yearWhere = append(yearWhere, `vi.production_year > 0`)
-	yearRows, err := d.sqlDB.QueryContext(ctx, `
+	yearRows, err := d.reader().QueryContext(ctx, `
 		SELECT DISTINCT vi.production_year
 		FROM virtual_items vi
 		WHERE `+strings.Join(yearWhere, " AND ")+`
@@ -964,7 +1065,7 @@ func (d *DB) GetFilters(ctx context.Context, parentID string, includeTypes []str
 
 	ratingWhere := append([]string(nil), where...)
 	ratingWhere = append(ratingWhere, `vi.official_rating != ''`)
-	ratingRows, err := d.sqlDB.QueryContext(ctx, `
+	ratingRows, err := d.reader().QueryContext(ctx, `
 		SELECT DISTINCT vi.official_rating
 		FROM virtual_items vi
 		WHERE `+strings.Join(ratingWhere, " AND ")+`
@@ -993,7 +1094,7 @@ func (d *DB) GetSimilarItems(ctx context.Context, itemID string, limit int) ([]V
 		return nil, err
 	}
 
-	rows, err := d.sqlDB.QueryContext(ctx, `
+	rows, err := d.reader().QueryContext(ctx, `
 		SELECT `+itemSelectCols+`
 		FROM virtual_items vi
 		WHERE vi.item_type = ? AND vi.id != ?
@@ -1012,7 +1113,7 @@ func (d *DB) GetSimilarItems(ctx context.Context, itemID string, limit int) ([]V
 }
 
 func (d *DB) GetSeasons(ctx context.Context, seriesID string) ([]VirtualItem, error) {
-	rows, err := d.sqlDB.QueryContext(ctx, `
+	rows, err := d.reader().QueryContext(ctx, `
 		SELECT `+itemSelectCols+`
 		FROM virtual_items vi
 		WHERE vi.item_type = 'Season' AND (vi.series_id = ? OR vi.parent_id = ?)
@@ -1037,7 +1138,7 @@ func (d *DB) GetEpisodes(ctx context.Context, seriesID, seasonID string) ([]Virt
 		args = append(args, seasonID, seasonID)
 	}
 
-	rows, err := d.sqlDB.QueryContext(ctx, `
+	rows, err := d.reader().QueryContext(ctx, `
 		SELECT `+itemSelectCols+`
 		FROM virtual_items vi
 		WHERE `+strings.Join(where, " AND ")+`
@@ -1115,7 +1216,7 @@ func (d *DB) GetNextUpEpisodes(ctx context.Context, userID, seriesID string, lim
 	}
 	orderedArgs = append(orderedArgs, limit)
 
-	rows, err := d.sqlDB.QueryContext(ctx, query, orderedArgs...)
+	rows, err := d.reader().QueryContext(ctx, query, orderedArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1199,7 +1300,15 @@ func scanItemSource(s rowScanner) (ItemSource, error) {
 }
 
 func (d *DB) UpsertSource(ctx context.Context, s ItemSource) error {
-	_, err := d.sqlDB.ExecContext(ctx, `
+	return upsertSourceExec(ctx, d.sqlDB, s)
+}
+
+func (d *DB) UpsertSourceTx(ctx context.Context, tx *sql.Tx, s ItemSource) error {
+	return upsertSourceExec(ctx, tx, s)
+}
+
+func upsertSourceExec(ctx context.Context, exec dbExecer, s ItemSource) error {
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO item_sources(
 			source_id, virtual_item_id, server_id, remote_item_id, remote_media_source_id,
 			label, container, video_codec, audio_codec,
@@ -1222,6 +1331,21 @@ func (d *DB) UpsertSource(ctx context.Context, s ItemSource) error {
 			run_time_ticks = excluded.run_time_ticks,
 			raw_media_streams_json = excluded.raw_media_streams_json,
 			raw_media_source_json = excluded.raw_media_source_json
+		WHERE item_sources.virtual_item_id IS NOT excluded.virtual_item_id
+			OR item_sources.server_id IS NOT excluded.server_id
+			OR item_sources.remote_item_id IS NOT excluded.remote_item_id
+			OR item_sources.remote_media_source_id IS NOT excluded.remote_media_source_id
+			OR item_sources.label IS NOT excluded.label
+			OR item_sources.container IS NOT excluded.container
+			OR item_sources.video_codec IS NOT excluded.video_codec
+			OR item_sources.audio_codec IS NOT excluded.audio_codec
+			OR item_sources.width IS NOT excluded.width
+			OR item_sources.height IS NOT excluded.height
+			OR item_sources.bitrate IS NOT excluded.bitrate
+			OR item_sources.size_bytes IS NOT excluded.size_bytes
+			OR item_sources.run_time_ticks IS NOT excluded.run_time_ticks
+			OR item_sources.raw_media_streams_json IS NOT excluded.raw_media_streams_json
+			OR item_sources.raw_media_source_json IS NOT excluded.raw_media_source_json
 	`,
 		s.SourceID, s.VirtualItemID, s.ServerID, s.RemoteItemID, s.RemoteMediaSourceID,
 		s.Label, s.Container, s.VideoCodec, s.AudioCodec,
@@ -1237,35 +1361,115 @@ func (d *DB) ListSourcesByItemIDs(ctx context.Context, itemIDs []string) (map[st
 		return result, nil
 	}
 
-	args := make([]any, len(itemIDs))
-	for i, id := range itemIDs {
-		args[i] = id
+	for start := 0; start < len(itemIDs); start += maxBindIDs {
+		end := start + maxBindIDs
+		if end > len(itemIDs) {
+			end = len(itemIDs)
+		}
+		chunk := itemIDs[start:end]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		rows, err := d.reader().QueryContext(ctx, `
+			SELECT `+sourceSelectCols+`
+			FROM item_sources s
+			LEFT JOIN upstream_servers us ON us.id = s.server_id
+			WHERE s.virtual_item_id IN (`+placeholders(len(chunk))+`)
+			ORDER BY COALESCE(us.priority, 100) ASC, s.bitrate DESC, s.source_id ASC
+		`, args...)
+		if err != nil {
+			return nil, err
+		}
+
+		for rows.Next() {
+			src, err := scanItemSource(rows)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			result[src.VirtualItemID] = append(result[src.VirtualItemID], src)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return result, nil
+}
+
+func (d *DB) CountSourcesByItemIDs(ctx context.Context, itemIDs []string) (map[string]int, error) {
+	result := make(map[string]int)
+	ids := normalizeDistinctIDs(itemIDs)
+	if len(ids) == 0 {
+		return result, nil
 	}
 
-	rows, err := d.sqlDB.QueryContext(ctx, `
-		SELECT `+sourceSelectCols+`
-		FROM item_sources s
-		LEFT JOIN upstream_servers us ON us.id = s.server_id
-		WHERE s.virtual_item_id IN (`+placeholders(len(itemIDs))+`)
-		ORDER BY COALESCE(us.priority, 100) ASC, s.bitrate DESC, s.source_id ASC
-	`, args...)
+	for start := 0; start < len(ids); start += maxBindIDs {
+		end := start + maxBindIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		rows, err := d.reader().QueryContext(ctx, `
+			SELECT virtual_item_id, COUNT(*)
+			FROM item_sources
+			WHERE virtual_item_id IN (`+placeholders(len(chunk))+`)
+			GROUP BY virtual_item_id
+		`, args...)
+		if err != nil {
+			return nil, err
+		}
+
+		for rows.Next() {
+			var id string
+			var cnt int
+			if err := rows.Scan(&id, &cnt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			result[id] = cnt
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return result, nil
+}
+
+func (d *DB) LookupVirtualItemIDsByRemoteItem(ctx context.Context, serverID, remoteItemID string) ([]string, error) {
+	rows, err := d.reader().QueryContext(ctx, `
+		SELECT DISTINCT virtual_item_id
+		FROM item_sources
+		WHERE server_id = ? AND remote_item_id = ?
+	`, serverID, remoteItemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	var out []string
 	for rows.Next() {
-		src, err := scanItemSource(rows)
-		if err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		result[src.VirtualItemID] = append(result[src.VirtualItemID], src)
+		out = append(out, id)
 	}
-	return result, rows.Err()
+	return out, rows.Err()
 }
 
 func (d *DB) ListSourcesByVirtualItemID(ctx context.Context, virtualItemID string) ([]ItemSource, error) {
-	rows, err := d.sqlDB.QueryContext(ctx, `
+	rows, err := d.reader().QueryContext(ctx, `
 		SELECT `+sourceSelectCols+`
 		FROM item_sources s
 		LEFT JOIN upstream_servers us ON us.id = s.server_id
@@ -1293,7 +1497,7 @@ func (d *DB) ListAllSourcesForItem(ctx context.Context, virtualItemID string) ([
 }
 
 func (d *DB) GetSourceByID(ctx context.Context, sourceID string) (*ItemSource, error) {
-	src, err := scanItemSource(d.sqlDB.QueryRowContext(ctx, `
+	src, err := scanItemSource(d.reader().QueryRowContext(ctx, `
 		SELECT `+sourceSelectCols+` FROM item_sources s WHERE s.source_id = ?
 	`, sourceID))
 	if err != nil {
@@ -1341,7 +1545,7 @@ func scanUserItemData(s rowScanner) (UserItemData, error) {
 }
 
 func (d *DB) GetUserItemData(ctx context.Context, userID, virtualItemID string) (*UserItemData, error) {
-	uid, err := scanUserItemData(d.sqlDB.QueryRowContext(ctx, `
+	uid, err := scanUserItemData(d.reader().QueryRowContext(ctx, `
 		SELECT user_id, virtual_item_id, played, playback_position_ticks, play_count, is_favorite, last_played_at
 		FROM user_item_data
 		WHERE user_id = ? AND virtual_item_id = ?
@@ -1361,30 +1565,42 @@ func (d *DB) BatchUserItemData(ctx context.Context, userID string, itemIDs []str
 		return result, nil
 	}
 
-	args := make([]any, 0, 1+len(itemIDs))
-	args = append(args, userID)
-	for _, id := range itemIDs {
-		args = append(args, id)
-	}
+	for start := 0; start < len(itemIDs); start += maxBindIDs {
+		end := start + maxBindIDs
+		if end > len(itemIDs) {
+			end = len(itemIDs)
+		}
+		chunk := itemIDs[start:end]
+		args := make([]any, 0, 1+len(chunk))
+		args = append(args, userID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
 
-	rows, err := d.sqlDB.QueryContext(ctx, `
-		SELECT user_id, virtual_item_id, played, playback_position_ticks, play_count, is_favorite, last_played_at
-		FROM user_item_data
-		WHERE user_id = ? AND virtual_item_id IN (`+placeholders(len(itemIDs))+`)
-	`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		uid, err := scanUserItemData(rows)
+		rows, err := d.reader().QueryContext(ctx, `
+			SELECT user_id, virtual_item_id, played, playback_position_ticks, play_count, is_favorite, last_played_at
+			FROM user_item_data
+			WHERE user_id = ? AND virtual_item_id IN (`+placeholders(len(chunk))+`)
+		`, args...)
 		if err != nil {
 			return nil, err
 		}
-		result[uid.VirtualItemID] = uid
+
+		for rows.Next() {
+			uid, err := scanUserItemData(rows)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			result[uid.VirtualItemID] = uid
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (d *DB) SetPlayed(ctx context.Context, userID, virtualItemID string, played bool, lastPlayedAt string) error {
@@ -1435,7 +1651,15 @@ func (d *DB) UpsertProgress(ctx context.Context, userID, virtualItemID string, p
 }
 
 func (d *DB) MergeInitialUserItemData(ctx context.Context, data UserItemData) error {
-	_, err := d.sqlDB.ExecContext(ctx, `
+	return mergeInitialUserItemDataExec(ctx, d.sqlDB, data)
+}
+
+func (d *DB) MergeInitialUserItemDataTx(ctx context.Context, tx *sql.Tx, data UserItemData) error {
+	return mergeInitialUserItemDataExec(ctx, tx, data)
+}
+
+func mergeInitialUserItemDataExec(ctx context.Context, exec dbExecer, data UserItemData) error {
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO user_item_data(user_id, virtual_item_id, played, playback_position_ticks, play_count, is_favorite, last_played_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, virtual_item_id) DO UPDATE SET
@@ -1447,13 +1671,18 @@ func (d *DB) MergeInitialUserItemData(ctx context.Context, data UserItemData) er
 				WHEN excluded.last_played_at > user_item_data.last_played_at THEN excluded.last_played_at
 				ELSE user_item_data.last_played_at
 			END
+		WHERE excluded.played > user_item_data.played
+			OR excluded.playback_position_ticks > user_item_data.playback_position_ticks
+			OR excluded.play_count > user_item_data.play_count
+			OR excluded.is_favorite > user_item_data.is_favorite
+			OR excluded.last_played_at > user_item_data.last_played_at
 	`, data.UserID, data.VirtualItemID, boolToInt(data.Played), data.PlaybackPositionTicks, data.PlayCount, boolToInt(data.IsFavorite), data.LastPlayedAt)
 	return err
 }
 
 func (d *DB) CountUnplayedInSubtree(ctx context.Context, userID, parentID string) (int, error) {
 	var count int
-	err := d.sqlDB.QueryRowContext(ctx, `
+	err := d.reader().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM virtual_items vi
 		LEFT JOIN user_item_data uid ON uid.virtual_item_id = vi.id AND uid.user_id = ?
@@ -1462,6 +1691,103 @@ func (d *DB) CountUnplayedInSubtree(ctx context.Context, userID, parentID string
 		  AND COALESCE(uid.played, 0) = 0
 	`, userID, parentID, parentID, parentID, parentID).Scan(&count)
 	return count, err
+}
+
+func (d *DB) BatchCountUnplayedInSubtrees(ctx context.Context, userID string, parentIDs []string) (map[string]int, error) {
+	ids := normalizeDistinctIDs(parentIDs)
+	out := make(map[string]int, len(ids))
+	for _, id := range ids {
+		out[id] = 0
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(ids); start += maxBindIDs {
+		end := start + maxBindIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		ph := placeholders(len(chunk))
+
+		// 1. Unplayed Episodes grouped by series_id.
+		seriesArgs := make([]any, 0, 1+len(chunk))
+		seriesArgs = append(seriesArgs, userID)
+		for _, id := range chunk {
+			seriesArgs = append(seriesArgs, id)
+		}
+
+		sRows, err := d.reader().QueryContext(ctx, `
+			SELECT vi.series_id, COUNT(*)
+			FROM virtual_items vi
+			LEFT JOIN user_item_data uid ON uid.virtual_item_id = vi.id AND uid.user_id = ?
+			WHERE vi.item_type = 'Episode'
+			  AND vi.series_id IN (`+ph+`)
+			  AND COALESCE(uid.played, 0) = 0
+			GROUP BY vi.series_id
+		`, seriesArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for sRows.Next() {
+			var id string
+			var cnt int
+			if err := sRows.Scan(&id, &cnt); err != nil {
+				_ = sRows.Close()
+				return nil, err
+			}
+			if _, ok := out[id]; ok {
+				out[id] = cnt
+			}
+		}
+		if err := sRows.Err(); err != nil {
+			_ = sRows.Close()
+			return nil, err
+		}
+		_ = sRows.Close()
+
+		// 2. Unplayed Episodes grouped by season_id / parent_id.
+		seasonArgs := make([]any, 0, 1+2*len(chunk))
+		seasonArgs = append(seasonArgs, userID)
+		for _, id := range chunk {
+			seasonArgs = append(seasonArgs, id)
+		}
+		for _, id := range chunk {
+			seasonArgs = append(seasonArgs, id)
+		}
+
+		pRows, err := d.reader().QueryContext(ctx, `
+			SELECT COALESCE(NULLIF(vi.season_id, ''), vi.parent_id) AS season_key, COUNT(*)
+			FROM virtual_items vi
+			LEFT JOIN user_item_data uid ON uid.virtual_item_id = vi.id AND uid.user_id = ?
+			WHERE vi.item_type = 'Episode'
+			  AND (vi.season_id IN (`+ph+`) OR vi.parent_id IN (`+ph+`))
+			  AND COALESCE(uid.played, 0) = 0
+			GROUP BY season_key
+		`, seasonArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for pRows.Next() {
+			var id string
+			var cnt int
+			if err := pRows.Scan(&id, &cnt); err != nil {
+				_ = pRows.Close()
+				return nil, err
+			}
+			if _, ok := out[id]; ok {
+				out[id] = cnt
+			}
+		}
+		if err := pRows.Err(); err != nil {
+			_ = pRows.Close()
+			return nil, err
+		}
+		_ = pRows.Close()
+	}
+
+	return out, nil
 }
 
 // --- ActivePlaySessions ---
@@ -1502,7 +1828,7 @@ func (d *DB) CreatePlaySession(ctx context.Context, s ActivePlaySession) error {
 }
 
 func (d *DB) GetPlaySession(ctx context.Context, playSessionID string) (*ActivePlaySession, error) {
-	ps, err := scanPlaySession(d.sqlDB.QueryRowContext(ctx, `
+	ps, err := scanPlaySession(d.reader().QueryRowContext(ctx, `
 		SELECT `+playSessionCols+` FROM active_play_sessions WHERE play_session_id = ?
 	`, playSessionID))
 	if err != nil {
@@ -1512,7 +1838,7 @@ func (d *DB) GetPlaySession(ctx context.Context, playSessionID string) (*ActiveP
 }
 
 func (d *DB) GetLatestPlaySessionByDevice(ctx context.Context, userID, deviceID, virtualItemID string) (*ActivePlaySession, error) {
-	ps, err := scanPlaySession(d.sqlDB.QueryRowContext(ctx, `
+	ps, err := scanPlaySession(d.reader().QueryRowContext(ctx, `
 		SELECT `+playSessionCols+`
 		FROM active_play_sessions
 		WHERE user_id = ? AND device_id = ? AND virtual_item_id = ?

@@ -70,6 +70,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 		AllowedHeaders: []string{"*"},
 		ExposedHeaders: []string{"Content-Range", "Accept-Ranges", "Content-Length"},
 	}))
+	r.Use(safeCompressMiddleware())
 
 	if deps.Admin != nil {
 		deps.Admin.Mount(r)
@@ -113,10 +114,13 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Get("/system/info/public", h.handleSystemInfoPublic)
 	r.Get("/system/endpoint", h.handleSystemEndpoint)
 	r.Get("/branding/configuration", h.handleBrandingConfiguration)
+	r.Get("/system/configuration/branding", h.handleBrandingConfiguration)
 	r.Get("/branding/css", h.handleBrandingCSS)
 	r.Get("/branding/css.css", h.handleBrandingCSS)
 	r.Get("/quickconnect/enabled", h.handleQuickConnectEnabled)
 	r.Get("/plugins", h.handleEmptyArray)
+	r.Get("/web/configurationpages", h.handleEmptyArray)
+	r.Get("/web/configurationpage", h.handleEmptyArray)
 	r.Get("/playback/bitratetest", h.handleBitrateTest)
 	r.Get("/localization/options", h.handleEmptyArray)
 	r.Get("/localization/countries", h.handleEmptyArray)
@@ -132,12 +136,24 @@ func NewRouter(deps RouterDeps) http.Handler {
 		ir.Head("/items/{itemId}/images/{imageType}", h.handleGetItemImage)
 		ir.Get("/items/{itemId}/images/{imageType}/{imageIndex}", h.handleGetItemImage)
 		ir.Head("/items/{itemId}/images/{imageType}/{imageIndex}", h.handleGetItemImage)
+		ir.Get("/items/{itemId}/images/{imageType}/{imageIndex}/{tag}/{format}/{maxWidth}/{maxHeight}/{percentPlayed}/{unplayedCount}", h.handleGetItemImage)
+		ir.Head("/items/{itemId}/images/{imageType}/{imageIndex}/{tag}/{format}/{maxWidth}/{maxHeight}/{percentPlayed}/{unplayedCount}", h.handleGetItemImage)
 	})
 
 	// Authenticated Jellyfin endpoints.
 	r.Group(func(ar chi.Router) {
 		ar.Use(auth.Authenticate(deps.DB))
 		ar.Get("/system/info", h.handleSystemInfo)
+		ar.Get("/system/info/storage", h.handleSystemInfoStorage)
+		ar.Get("/system/activitylog/entries", h.handleEmptyQueryResult)
+		ar.Get("/system/logs", h.handleEmptyArray)
+		ar.Get("/system/configuration", h.handleEmptyObject)
+		ar.Get("/scheduledtasks", h.handleEmptyArray)
+		ar.Get("/devices", h.handleEmptyQueryResult)
+		ar.Get("/channels", h.handleEmptyQueryResult)
+		ar.Get("/library/virtualfolders", h.handleLibraryVirtualFolders)
+		ar.Get("/library/mediafolders", h.handleLibraryMediaFolders)
+		ar.Get("/mediasegments/{itemId}", h.handleEmptyQueryResult)
 		ar.Get("/users", h.handleUsers)
 		ar.Get("/users/me", h.handleUserMe)
 		ar.Get("/users/{userId}", h.handleUserByID)
@@ -265,6 +281,8 @@ func normalizeRequestPath(next http.Handler) http.Handler {
 		lower := strings.ToLower(stripped)
 		var normalized string
 		switch {
+		case lower == "/web/configurationpages" || lower == "/web/configurationpage":
+			normalized = lower
 		case lower == "/web" || strings.HasPrefix(lower, "/web/"):
 			normalized = "/web" + stripped[len("/web"):]
 		case lower == "/admin" || strings.HasPrefix(lower, "/admin/"):
@@ -293,6 +311,37 @@ func normalizeRequestPath(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func shouldSkipCompression(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasPrefix(lower, "/videos/") ||
+		strings.HasPrefix(lower, "/socket") ||
+		strings.HasPrefix(lower, "/embywebsocket") ||
+		strings.HasPrefix(lower, "/playback/bitratetest") ||
+		strings.Contains(lower, "/images/")
+}
+
+func safeCompressMiddleware() func(http.Handler) http.Handler {
+	compress := middleware.Compress(
+		5,
+		"application/json",
+		"text/html",
+		"text/css",
+		"application/javascript",
+		"text/javascript",
+		"image/svg+xml",
+	)
+	return func(next http.Handler) http.Handler {
+		compressedNext := compress(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if shouldSkipCompression(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			compressedNext.ServeHTTP(w, r)
+		})
+	}
 }
 
 func slogAccessLogger(logger *slog.Logger) func(http.Handler) http.Handler {

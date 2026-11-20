@@ -26,11 +26,22 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient creates an upstream Jellyfin HTTP client with a 30s timeout.
+// NewClient creates an upstream Jellyfin HTTP client with a 30s timeout and pooled transport.
 func NewClient() *Client {
+	var transport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
+		transport = dt.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 90 * time.Second
+
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: clientHTTPTimeout,
+			Timeout:   clientHTTPTimeout,
+			Transport: transport,
 		},
 	}
 }
@@ -269,11 +280,17 @@ func (c *Client) FetchImage(ctx context.Context, srv db.UpstreamServer, remoteIt
 	fwd := url.Values{}
 	if query != nil {
 		allowed := map[string]string{
-			"maxwidth":  "maxWidth",
-			"maxheight": "maxHeight",
-			"quality":   "quality",
-			"tag":       "tag",
-			"format":    "format",
+			"maxwidth":        "maxWidth",
+			"maxheight":       "maxHeight",
+			"width":           "width",
+			"height":          "height",
+			"fillwidth":       "fillWidth",
+			"fillheight":      "fillHeight",
+			"quality":         "quality",
+			"format":          "format",
+			"blur":            "blur",
+			"backgroundcolor": "backgroundColor",
+			"foregroundlayer": "foregroundLayer",
 		}
 		for k, vals := range query {
 			canon, ok := allowed[strings.ToLower(k)]

@@ -178,8 +178,17 @@ func runPeriodicSync(ctx context.Context, interval time.Duration, database *db.D
 				logger.Warn("failed to check enabled servers for initial sync", "error", err)
 			}
 		} else if len(servers) > 0 {
-			if err := syncEngine.TriggerSync(ctx); err != nil && ctx.Err() == nil {
-				logger.Warn("initial upstream sync failed", "error", err)
+			needsSync := false
+			for _, srv := range servers {
+				if srv.LastSyncAt == nil || time.Since(*srv.LastSyncAt) >= interval {
+					needsSync = true
+					break
+				}
+			}
+			if needsSync {
+				if err := syncEngine.TriggerSync(ctx); err != nil && ctx.Err() == nil {
+					logger.Warn("initial upstream sync failed", "error", err)
+				}
 			}
 		}
 	}

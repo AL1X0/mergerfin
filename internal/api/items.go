@@ -175,7 +175,7 @@ func (h *apiHandler) handleGetItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, items, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, items, true, queryVal(q, "Fields", "fields"))
 	if err != nil {
 		h.logger.Error("build item DTOs failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to format items")
@@ -272,7 +272,7 @@ func (h *apiHandler) handleGetLatestItems(w http.ResponseWriter, r *http.Request
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, items, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, items, true, queryVal(q, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format latest items")
 		return
@@ -326,7 +326,7 @@ func (h *apiHandler) handleGetResumeItems(w http.ResponseWriter, r *http.Request
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, items, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, items, true, queryVal(q, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format resume items")
 		return
@@ -427,7 +427,7 @@ func (h *apiHandler) handleGetSimilarItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, items, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, items, true, queryFirst(r, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format similar items")
 		return

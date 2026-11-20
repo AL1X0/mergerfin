@@ -269,3 +269,229 @@ func TestListenerManagerHandshakeKeepAliveAndDebouncedSync(t *testing.T) {
 		t.Fatalf("ListenerManager.Run did not exit cleanly after context cancel")
 	}
 }
+
+type mockUserDataDeltaSyncer struct {
+	mockDeltaSyncer
+	udMu     sync.Mutex
+	udEvents []any
+	udCh     chan struct{}
+}
+
+func (m *mockUserDataDeltaSyncer) SyncUserDataEvent(ctx context.Context, srv db.UpstreamServer, data any) {
+	m.udMu.Lock()
+	m.udEvents = append(m.udEvents, data)
+	m.udMu.Unlock()
+	if m.udCh != nil {
+		select {
+		case m.udCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestListenerManagerUserDataChangedDoesNotTriggerSyncServer(t *testing.T) {
+	database := openTestDB(t)
+	pool, err := NewPool(database, "listener-ud-secret", nil)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	ctx := context.Background()
+
+	const upstreamToken = "up-ws-ud-token"
+	srvID := idgen.NewRandomHex32()
+
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/socket" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+
+		_ = wsjson.Write(r.Context(), conn, wsMessage{
+			MessageType: "UserDataChanged",
+			Data: map[string]any{
+				"UserId": "ru",
+				"UserDataList": []map[string]any{
+					{"ItemId": "remote-123", "Played": true},
+				},
+			},
+		})
+
+		for {
+			var sink wsMessage
+			if err := wsjson.Read(r.Context(), conn, &sink); err != nil {
+				return
+			}
+		}
+	}))
+	defer wsSrv.Close()
+
+	encTok, err := pool.EncryptToken(upstreamToken)
+	if err != nil {
+		t.Fatalf("EncryptToken: %v", err)
+	}
+	if err := database.UpsertServer(ctx, db.UpstreamServer{
+		ID: srvID, Name: "WSUpUD", BaseURL: wsSrv.URL, Username: "u", RemoteUserID: "ru",
+		AccessToken: encTok, Priority: 10, StreamMode: "proxy", Enabled: true, IsOnline: true,
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	syncer := &mockUserDataDeltaSyncer{
+		mockDeltaSyncer: mockDeltaSyncer{ch: make(chan string, 4)},
+		udCh:            make(chan struct{}, 4),
+	}
+	broadcaster := &mockBroadcaster{ch: make(chan wsMessage, 4)}
+
+	mgr := NewListenerManager(pool, syncer, broadcaster, nil)
+	mgr.ReconcileInterval = 200 * time.Millisecond
+	mgr.DebounceDelay = 40 * time.Millisecond
+	mgr.BackoffSchedule = []time.Duration{50 * time.Millisecond}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		mgr.Run(runCtx)
+	}()
+
+	select {
+	case <-syncer.udCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-runDone
+		t.Fatalf("timed out waiting for SyncUserDataEvent")
+	}
+
+	// Wait past debounce delay to confirm SyncServer, TriggerSync, and Broadcast are NOT triggered.
+	time.Sleep(120 * time.Millisecond)
+
+	cancel()
+	<-runDone
+
+	if syncer.count() != 0 {
+		t.Fatalf("expected 0 SyncServer calls on UserDataChanged, got %d", syncer.count())
+	}
+	syncer.mu.Lock()
+	trigCalls := syncer.triggerCalls
+	syncer.mu.Unlock()
+	if trigCalls != 0 {
+		t.Fatalf("expected 0 TriggerSync calls on UserDataChanged, got %d", trigCalls)
+	}
+
+	broadcaster.mu.Lock()
+	bMsgs := len(broadcaster.msgs)
+	broadcaster.mu.Unlock()
+	if bMsgs != 0 {
+		t.Fatalf("expected 0 downstream broadcasts on UserDataChanged, got %d", bMsgs)
+	}
+}
+
+func TestListenerManagerIgnoresServerKeepAliveEcho(t *testing.T) {
+	database := openTestDB(t)
+	pool, err := NewPool(database, "listener-ka-secret", nil)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	ctx := context.Background()
+
+	const upstreamToken = "up-ws-ka-token"
+	srvID := idgen.NewRandomHex32()
+
+	extraKeepAlive := make(chan wsMessage, 4)
+	firstKeepAlive := make(chan struct{}, 1)
+
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/socket" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+
+		// 1. Challenge client with ForceKeepAlive(60).
+		if err := wsjson.Write(r.Context(), conn, wsMessage{MessageType: "ForceKeepAlive", Data: 60}); err != nil {
+			return
+		}
+
+		// 2. Read the single KeepAlive reply to ForceKeepAlive.
+		var reply wsMessage
+		if err := wsjson.Read(r.Context(), conn, &reply); err != nil {
+			return
+		}
+		if strings.EqualFold(reply.MessageType, "KeepAlive") {
+			select {
+			case firstKeepAlive <- struct{}{}:
+			default:
+			}
+		}
+
+		// 3. Echo KeepAlive back just like Jellyfin 12.4 does; client must ignore it.
+		if err := wsjson.Write(r.Context(), conn, wsMessage{MessageType: "KeepAlive", Data: ""}); err != nil {
+			return
+		}
+
+		// 4. Any subsequent frame read before cancel indicates a ping-pong loop bug.
+		for {
+			var extra wsMessage
+			if err := wsjson.Read(r.Context(), conn, &extra); err != nil {
+				return
+			}
+			select {
+			case extraKeepAlive <- extra:
+			default:
+			}
+		}
+	}))
+	defer wsSrv.Close()
+
+	encTok, err := pool.EncryptToken(upstreamToken)
+	if err != nil {
+		t.Fatalf("EncryptToken: %v", err)
+	}
+	if err := database.UpsertServer(ctx, db.UpstreamServer{
+		ID: srvID, Name: "WSUpKA", BaseURL: wsSrv.URL, Username: "u", RemoteUserID: "ru",
+		AccessToken: encTok, Priority: 10, StreamMode: "proxy", Enabled: true, IsOnline: true,
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	syncer := &mockDeltaSyncer{}
+	broadcaster := &mockBroadcaster{}
+	mgr := NewListenerManager(pool, syncer, broadcaster, nil)
+	mgr.ReconcileInterval = 200 * time.Millisecond
+	mgr.BackoffSchedule = []time.Duration{50 * time.Millisecond}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		mgr.Run(runCtx)
+	}()
+
+	select {
+	case <-firstKeepAlive:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-runDone
+		t.Fatalf("timed out waiting for initial KeepAlive reply to ForceKeepAlive")
+	}
+
+	select {
+	case unexpected := <-extraKeepAlive:
+		cancel()
+		<-runDone
+		t.Fatalf("received unexpected KeepAlive ping-pong frame after server KeepAlive echo: %+v", unexpected)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	cancel()
+	<-runDone
+}

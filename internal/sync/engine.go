@@ -2,6 +2,7 @@ package syncengine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,23 @@ import (
 	"github.com/AL1X0/mergerfin/internal/idgen"
 	"github.com/AL1X0/mergerfin/internal/upstream"
 )
+
+const syncBatchSize = 250
+
+type syncOpKind uint8
+
+const (
+	opUpsertItem syncOpKind = iota
+	opUpsertSource
+	opMergeUserData
+)
+
+type syncWriteOp struct {
+	kind     syncOpKind
+	item     db.VirtualItem
+	source   db.ItemSource
+	userData db.UserItemData
+}
 
 // Broadcaster pushes real-time notifications (e.g. LibraryChanged) to connected WebSocket clients.
 type Broadcaster interface {
@@ -223,6 +241,11 @@ func (e *Engine) syncOneServer(
 	}
 	latencyMs := time.Since(start).Milliseconds()
 
+	var existingDBItems map[string]db.VirtualItem
+	if checkExistingInDB {
+		existingDBItems, _ = e.db.GetAllItemsMap(ctx)
+	}
+
 	var movies, series, seasons, episodes []upstream.RemoteItem
 	for _, it := range allItems {
 		switch {
@@ -246,6 +269,7 @@ func (e *Engine) syncOneServer(
 	seasonByRemoteID := make(map[string]upstream.RemoteItem, len(seasons))
 
 	var keepSourceIDs []string
+	ops := make([]syncWriteOp, 0, len(allItems)*2)
 
 	// 1. Series
 	for _, it := range series {
@@ -257,11 +281,10 @@ func (e *Engine) syncOneServer(
 		seriesNameByKey[seriesKey] = it.Name
 
 		vItem := remoteToVirtualItem(it, srv.ID, seriesVID, tvLibID, tvLibID, "", "", "Series", seriesKey, normIDs)
-		if err := e.saveMergedItem(ctx, vItem, seenItems, checkExistingInDB); err != nil {
-			return stats, err
+		if queueMergedItem(vItem, seenItems, existingDBItems, &ops) {
+			stats.itemsUpserted++
 		}
-		stats.itemsUpserted++
-		e.mergeUserData(ctx, adminUserIDs, seriesVID, it.UserData)
+		queueUserData(adminUserIDs, seriesVID, it.UserData, &ops)
 	}
 
 	// 2. Seasons
@@ -275,9 +298,7 @@ func (e *Engine) syncOneServer(
 		}
 		seriesVID := idgen.VirtualItemID(seriesKey)
 
-		if err := e.ensurePlaceholderSeries(ctx, seriesVID, seriesKey, tvLibID, it.SeriesName, seriesNameByKey, seenItems, checkExistingInDB); err != nil {
-			return stats, err
-		}
+		ensurePlaceholderSeries(seriesVID, seriesKey, tvLibID, it.SeriesName, seriesNameByKey, seenItems, existingDBItems, &ops)
 
 		seasonIdx := it.IndexNumber
 		seasonKey := ResolveSeasonKey(seriesKey, seasonIdx)
@@ -293,11 +314,10 @@ func (e *Engine) syncOneServer(
 		if vItem.SeriesName == "" {
 			vItem.SeriesName = seriesNameByKey[seriesKey]
 		}
-		if err := e.saveMergedItem(ctx, vItem, seenItems, checkExistingInDB); err != nil {
-			return stats, err
+		if queueMergedItem(vItem, seenItems, existingDBItems, &ops) {
+			stats.itemsUpserted++
 		}
-		stats.itemsUpserted++
-		e.mergeUserData(ctx, adminUserIDs, seasonVID, it.UserData)
+		queueUserData(adminUserIDs, seasonVID, it.UserData, &ops)
 	}
 
 	// 3. Episodes
@@ -308,9 +328,7 @@ func (e *Engine) syncOneServer(
 		}
 		seriesVID := idgen.VirtualItemID(seriesKey)
 
-		if err := e.ensurePlaceholderSeries(ctx, seriesVID, seriesKey, tvLibID, it.SeriesName, seriesNameByKey, seenItems, checkExistingInDB); err != nil {
-			return stats, err
-		}
+		ensurePlaceholderSeries(seriesVID, seriesKey, tvLibID, it.SeriesName, seriesNameByKey, seenItems, existingDBItems, &ops)
 
 		seasonIdx := it.ParentIndexNumber
 		if seasonIdx == 0 && it.SeasonID != "" {
@@ -325,9 +343,7 @@ func (e *Engine) syncOneServer(
 		}
 		seasonVID := idgen.VirtualItemID(seasonKey)
 
-		if err := e.ensurePlaceholderSeason(ctx, seasonVID, seasonKey, tvLibID, seriesVID, it.SeasonName, it.SeriesName, seriesNameByKey[seriesKey], seasonIdx, seenItems, checkExistingInDB); err != nil {
-			return stats, err
-		}
+		ensurePlaceholderSeason(seasonVID, seasonKey, tvLibID, seriesVID, it.SeasonName, it.SeriesName, seriesNameByKey[seriesKey], seasonIdx, seenItems, existingDBItems, &ops)
 
 		normIDs := NormalizeProviderIDs(it.ProviderIDs)
 		epKey := ResolveEpisodeKey(seriesKey, seasonIdx, it.IndexNumber, it.Name, normIDs)
@@ -342,17 +358,13 @@ func (e *Engine) syncOneServer(
 			vItem.SeasonName = fmt.Sprintf("Season %d", seasonIdx)
 		}
 
-		if err := e.saveMergedItem(ctx, vItem, seenItems, checkExistingInDB); err != nil {
-			return stats, err
+		if queueMergedItem(vItem, seenItems, existingDBItems, &ops) {
+			stats.itemsUpserted++
 		}
-		stats.itemsUpserted++
 
-		srcIDs, err := e.upsertItemSources(ctx, srv, epVID, it)
-		if err != nil {
-			return stats, err
-		}
+		srcIDs := queueItemSources(srv, epVID, it, &ops)
 		keepSourceIDs = append(keepSourceIDs, srcIDs...)
-		e.mergeUserData(ctx, adminUserIDs, epVID, it.UserData)
+		queueUserData(adminUserIDs, epVID, it.UserData, &ops)
 	}
 
 	// 4. Movies
@@ -362,17 +374,17 @@ func (e *Engine) syncOneServer(
 		movieVID := idgen.VirtualItemID(movieKey)
 
 		vItem := remoteToVirtualItem(it, srv.ID, movieVID, moviesLibID, moviesLibID, "", "", "Movie", movieKey, normIDs)
-		if err := e.saveMergedItem(ctx, vItem, seenItems, checkExistingInDB); err != nil {
-			return stats, err
+		if queueMergedItem(vItem, seenItems, existingDBItems, &ops) {
+			stats.itemsUpserted++
 		}
-		stats.itemsUpserted++
 
-		srcIDs, err := e.upsertItemSources(ctx, srv, movieVID, it)
-		if err != nil {
-			return stats, err
-		}
+		srcIDs := queueItemSources(srv, movieVID, it, &ops)
 		keepSourceIDs = append(keepSourceIDs, srcIDs...)
-		e.mergeUserData(ctx, adminUserIDs, movieVID, it.UserData)
+		queueUserData(adminUserIDs, movieVID, it.UserData, &ops)
+	}
+
+	if err := e.flushSyncOps(ctx, ops); err != nil {
+		return stats, err
 	}
 
 	deleted, err := e.db.DeleteServerSourcesNotIn(ctx, srv.ID, keepSourceIDs)
@@ -390,15 +402,47 @@ func (e *Engine) syncOneServer(
 	return stats, nil
 }
 
-func (e *Engine) ensurePlaceholderSeries(
-	ctx context.Context,
+func (e *Engine) flushSyncOps(ctx context.Context, ops []syncWriteOp) error {
+	for start := 0; start < len(ops); start += syncBatchSize {
+		end := start + syncBatchSize
+		if end > len(ops) {
+			end = len(ops)
+		}
+		chunk := ops[start:end]
+		if err := e.db.WithWriteTx(ctx, func(tx *sql.Tx) error {
+			for _, op := range chunk {
+				switch op.kind {
+				case opUpsertItem:
+					if err := e.db.UpsertItemTx(ctx, tx, op.item); err != nil {
+						return err
+					}
+				case opUpsertSource:
+					if err := e.db.UpsertSourceTx(ctx, tx, op.source); err != nil {
+						return fmt.Errorf("upsert source %s: %w", op.source.SourceID, err)
+					}
+				case opMergeUserData:
+					if err := e.db.MergeInitialUserItemDataTx(ctx, tx, op.userData); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensurePlaceholderSeries(
 	seriesVID, seriesKey, tvLibID, seriesName string,
 	seriesNameByKey map[string]string,
 	seenItems map[string]*db.VirtualItem,
-	checkExistingInDB bool,
-) error {
+	existingDBItems map[string]db.VirtualItem,
+	ops *[]syncWriteOp,
+) {
 	if _, ok := seenItems[seriesVID]; ok {
-		return nil
+		return
 	}
 	if strings.TrimSpace(seriesName) == "" {
 		seriesName = seriesNameByKey[seriesKey]
@@ -423,18 +467,18 @@ func (e *Engine) ensurePlaceholderSeries(
 		PeopleJSON:      "[]",
 		ProviderIDsJSON: "{}",
 	}
-	return e.saveMergedItem(ctx, placeholder, seenItems, checkExistingInDB)
+	queueMergedItem(placeholder, seenItems, existingDBItems, ops)
 }
 
-func (e *Engine) ensurePlaceholderSeason(
-	ctx context.Context,
+func ensurePlaceholderSeason(
 	seasonVID, seasonKey, tvLibID, seriesVID, seasonName, itemSeriesName, mappedSeriesName string,
 	seasonIdx int,
 	seenItems map[string]*db.VirtualItem,
-	checkExistingInDB bool,
-) error {
+	existingDBItems map[string]db.VirtualItem,
+	ops *[]syncWriteOp,
+) {
 	if _, ok := seenItems[seasonVID]; ok {
-		return nil
+		return
 	}
 	if strings.TrimSpace(seasonName) == "" {
 		seasonName = fmt.Sprintf("Season %d", seasonIdx)
@@ -460,33 +504,40 @@ func (e *Engine) ensurePlaceholderSeason(
 		PeopleJSON:      "[]",
 		ProviderIDsJSON: "{}",
 	}
-	return e.saveMergedItem(ctx, placeholder, seenItems, checkExistingInDB)
+	queueMergedItem(placeholder, seenItems, existingDBItems, ops)
 }
 
-func (e *Engine) saveMergedItem(
-	ctx context.Context,
+func queueMergedItem(
 	incoming db.VirtualItem,
 	seenItems map[string]*db.VirtualItem,
-	checkExistingInDB bool,
-) error {
+	existingDBItems map[string]db.VirtualItem,
+	ops *[]syncWriteOp,
+) bool {
 	if existing, ok := seenItems[incoming.ID]; ok {
 		if mergeMissingFields(existing, incoming) {
-			return e.db.UpsertItem(ctx, *existing)
+			*ops = append(*ops, syncWriteOp{kind: opUpsertItem, item: *existing})
+			return true
 		}
-		return nil
+		return false
 	}
 
-	if checkExistingInDB {
-		if existing, err := e.db.GetItemByID(ctx, incoming.ID); err == nil && existing != nil {
-			mergeMissingFields(existing, incoming)
-			seenItems[incoming.ID] = existing
-			return e.db.UpsertItem(ctx, *existing)
+	if existingDBItems != nil {
+		if existing, ok := existingDBItems[incoming.ID]; ok {
+			copyExisting := existing
+			changed := mergeMissingFields(&copyExisting, incoming)
+			seenItems[incoming.ID] = &copyExisting
+			if changed {
+				*ops = append(*ops, syncWriteOp{kind: opUpsertItem, item: copyExisting})
+				return true
+			}
+			return false
 		}
 	}
 
 	copyItem := incoming
 	seenItems[incoming.ID] = &copyItem
-	return e.db.UpsertItem(ctx, incoming)
+	*ops = append(*ops, syncWriteOp{kind: opUpsertItem, item: incoming})
+	return true
 }
 
 func mergeMissingFields(dst *db.VirtualItem, src db.VirtualItem) bool {
@@ -551,7 +602,7 @@ func mergeMissingFields(dst *db.VirtualItem, src db.VirtualItem) bool {
 	return changed
 }
 
-func (e *Engine) upsertItemSources(ctx context.Context, srv db.UpstreamServer, virtualItemID string, it upstream.RemoteItem) ([]string, error) {
+func queueItemSources(srv db.UpstreamServer, virtualItemID string, it upstream.RemoteItem, ops *[]syncWriteOp) []string {
 	var sourceIDs []string
 	for _, ms := range it.MediaSources {
 		remoteMSID := ms.ID
@@ -617,27 +668,105 @@ func (e *Engine) upsertItemSources(ctx context.Context, srv db.UpstreamServer, v
 			RawMediaStreamsJSON: rawStreams,
 			RawMediaSourceJSON:  rawSource,
 		}
-		if err := e.db.UpsertSource(ctx, src); err != nil {
-			return nil, fmt.Errorf("upsert source %s: %w", srcID, err)
-		}
+		*ops = append(*ops, syncWriteOp{kind: opUpsertSource, source: src})
 	}
-	return sourceIDs, nil
+	return sourceIDs
 }
 
-func (e *Engine) mergeUserData(ctx context.Context, adminUserIDs []string, virtualItemID string, ud *upstream.RemoteUserData) {
+func queueUserData(adminUserIDs []string, virtualItemID string, ud *upstream.RemoteUserData, ops *[]syncWriteOp) {
 	if ud == nil || len(adminUserIDs) == 0 {
 		return
 	}
 	for _, uid := range adminUserIDs {
-		_ = e.db.MergeInitialUserItemData(ctx, db.UserItemData{
-			UserID:                uid,
-			VirtualItemID:         virtualItemID,
-			Played:                ud.Played,
-			PlaybackPositionTicks: ud.PlaybackPositionTicks,
-			PlayCount:             ud.PlayCount,
-			IsFavorite:            ud.IsFavorite,
-			LastPlayedAt:          ud.LastPlayedDate,
+		*ops = append(*ops, syncWriteOp{
+			kind: opMergeUserData,
+			userData: db.UserItemData{
+				UserID:                uid,
+				VirtualItemID:         virtualItemID,
+				Played:                ud.Played,
+				PlaybackPositionTicks: ud.PlaybackPositionTicks,
+				PlayCount:             ud.PlayCount,
+				IsFavorite:            ud.IsFavorite,
+				LastPlayedAt:          ud.LastPlayedDate,
+			},
 		})
+	}
+}
+
+type userDataChangedEntry struct {
+	ItemID                string `json:"ItemId"`
+	Played                bool   `json:"Played"`
+	PlaybackPositionTicks int64  `json:"PlaybackPositionTicks"`
+	PlayCount             int    `json:"PlayCount"`
+	IsFavorite            bool   `json:"IsFavorite"`
+	LastPlayedDate        string `json:"LastPlayedDate"`
+}
+
+type userDataChangedPayload struct {
+	UserID       string                 `json:"UserId"`
+	UserDataList []userDataChangedEntry `json:"UserDataList"`
+}
+
+// SyncUserDataEvent applies an upstream UserDataChanged WebSocket payload directly
+// to matching local virtual items for admin users without triggering a full library sync.
+func (e *Engine) SyncUserDataEvent(ctx context.Context, srv db.UpstreamServer, data any) {
+	if e == nil || e.db == nil || data == nil {
+		return
+	}
+
+	var raw []byte
+	switch v := data.(type) {
+	case json.RawMessage:
+		raw = v
+	case []byte:
+		raw = v
+	default:
+		var err error
+		raw, err = json.Marshal(v)
+		if err != nil {
+			return
+		}
+	}
+
+	var payload userDataChangedPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+
+	if payload.UserID != "" && srv.RemoteUserID != "" && !strings.EqualFold(payload.UserID, srv.RemoteUserID) {
+		return
+	}
+	if len(payload.UserDataList) == 0 {
+		return
+	}
+
+	adminUserIDs, err := e.loadAdminUserIDs(ctx)
+	if err != nil || len(adminUserIDs) == 0 {
+		return
+	}
+
+	for _, entry := range payload.UserDataList {
+		remoteItemID := strings.TrimSpace(entry.ItemID)
+		if remoteItemID == "" {
+			continue
+		}
+		vids, err := e.db.LookupVirtualItemIDsByRemoteItem(ctx, srv.ID, remoteItemID)
+		if err != nil || len(vids) == 0 {
+			continue
+		}
+		for _, vid := range vids {
+			for _, uid := range adminUserIDs {
+				_ = e.db.MergeInitialUserItemData(ctx, db.UserItemData{
+					UserID:                uid,
+					VirtualItemID:         vid,
+					Played:                entry.Played,
+					PlaybackPositionTicks: entry.PlaybackPositionTicks,
+					PlayCount:             entry.PlayCount,
+					IsFavorite:            entry.IsFavorite,
+					LastPlayedAt:          entry.LastPlayedDate,
+				})
+			}
+		}
 	}
 }
 

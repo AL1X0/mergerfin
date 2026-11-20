@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -493,5 +494,109 @@ func (h *apiHandler) handleLiveTVInfo(w http.ResponseWriter, r *http.Request) {
 		Services:     []any{},
 		IsEnabled:    false,
 		EnabledUsers: []string{},
+	})
+}
+
+func (h *apiHandler) handleEmptyObject(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// FolderStorageDto represents storage metadata for a Jellyfin directory.
+type FolderStorageDto struct {
+	Path        string `json:"Path"`
+	FreeSpace   int64  `json:"FreeSpace"`
+	UsedSpace   int64  `json:"UsedSpace"`
+	StorageType string `json:"StorageType"`
+}
+
+// SystemStorageDto represents the Jellyfin /System/Info/Storage response payload.
+type SystemStorageDto struct {
+	CacheFolder            FolderStorageDto `json:"CacheFolder"`
+	DataFolder             FolderStorageDto `json:"DataFolder"`
+	ProgramDataFolder      FolderStorageDto `json:"ProgramDataFolder"`
+	ImageCacheFolder       FolderStorageDto `json:"ImageCacheFolder"`
+	InternalMetadataFolder FolderStorageDto `json:"InternalMetadataFolder"`
+	LogFolder              FolderStorageDto `json:"LogFolder"`
+	TranscodingTempFolder  FolderStorageDto `json:"TranscodingTempFolder"`
+	Libraries              []any            `json:"Libraries"`
+}
+
+func (h *apiHandler) handleSystemInfoStorage(w http.ResponseWriter, r *http.Request) {
+	dataDir := "./data"
+	if h.cfg != nil && strings.TrimSpace(h.cfg.DataDir) != "" {
+		dataDir = strings.TrimSpace(h.cfg.DataDir)
+	}
+	folder := func(p string) FolderStorageDto {
+		return FolderStorageDto{
+			Path:        p,
+			StorageType: "Local",
+		}
+	}
+	writeJSON(w, http.StatusOK, SystemStorageDto{
+		CacheFolder:            folder(filepath.Join(dataDir, "cache")),
+		DataFolder:             folder(dataDir),
+		ProgramDataFolder:      folder(dataDir),
+		ImageCacheFolder:       folder(h.imageCacheDir()),
+		InternalMetadataFolder: folder(filepath.Join(dataDir, "metadata")),
+		LogFolder:              folder(filepath.Join(dataDir, "log")),
+		TranscodingTempFolder:  folder(filepath.Join(dataDir, "transcodes")),
+		Libraries:              []any{},
+	})
+}
+
+// VirtualFolderInfoDto represents a virtual library entry for /Library/VirtualFolders.
+type VirtualFolderInfoDto struct {
+	Name           string         `json:"Name"`
+	Locations      []string       `json:"Locations"`
+	CollectionType string         `json:"CollectionType,omitempty"`
+	LibraryOptions map[string]any `json:"LibraryOptions"`
+	ItemId         string         `json:"ItemId"`
+}
+
+func (h *apiHandler) handleLibraryVirtualFolders(w http.ResponseWriter, r *http.Request) {
+	libs, err := h.db.ListLibraries(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list virtual folders", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list virtual folders")
+		return
+	}
+
+	out := make([]VirtualFolderInfoDto, 0, len(libs))
+	for _, lib := range libs {
+		out = append(out, VirtualFolderInfoDto{
+			Name:           lib.Name,
+			Locations:      []string{},
+			CollectionType: lib.CollectionType,
+			LibraryOptions: map[string]any{},
+			ItemId:         ensureHex32(lib.ID),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *apiHandler) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) {
+	userID, valid := resolveRequestUserID(r)
+	if !valid {
+		writeError(w, http.StatusBadRequest, "invalid userId")
+		return
+	}
+
+	libs, err := h.db.ListLibraries(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list media folders", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list media folders")
+		return
+	}
+
+	serverID, _ := h.serverIdentity(r.Context())
+	items := make([]BaseItemDto, 0, len(libs))
+	for _, lib := range libs {
+		items = append(items, libraryToDTO(r.Context(), h.db, serverID, userID, lib))
+	}
+
+	writeJSON(w, http.StatusOK, QueryResult{
+		Items:            items,
+		TotalRecordCount: len(items),
+		StartIndex:       0,
 	})
 }

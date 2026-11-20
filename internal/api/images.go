@@ -1,23 +1,37 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/idgen"
 	"github.com/AL1X0/mergerfin/internal/upstream"
+	"golang.org/x/sync/singleflight"
 )
+
+var imgFlight singleflight.Group
+
+type imageFetchResult struct {
+	data        []byte
+	contentType string
+	status      int
+	err         error
+	notFoundMsg string
+}
 
 func (h *apiHandler) imageCacheDir() string {
 	if h.cfg != nil && strings.TrimSpace(h.cfg.ImageCacheDir()) != "" {
@@ -26,15 +40,21 @@ func (h *apiHandler) imageCacheDir() string {
 	return filepath.Join(os.TempDir(), "mergerfin-image-cache")
 }
 
-func buildImageCacheKey(itemID, imageType, imageIndex, maxWidth, maxHeight, quality, format string) string {
+func buildImageCacheKey(itemID, imageType, imageIndex, maxWidth, maxHeight, width, height, fillWidth, fillHeight, quality, format, blur string) string {
 	raw := strings.Join([]string{
+		"v2",
 		itemID,
 		strings.ToLower(imageType),
 		imageIndex,
 		maxWidth,
 		maxHeight,
+		width,
+		height,
+		fillWidth,
+		fillHeight,
 		quality,
 		strings.ToLower(format),
+		blur,
 	}, "|")
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
@@ -78,6 +98,23 @@ func canonicalImageType(raw string) string {
 		runes[0] = unicode.ToUpper(runes[0])
 		return string(runes)
 	}
+}
+
+func normalizeImageDim(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" || v == "0" {
+		return ""
+	}
+	return v
+}
+
+func imageCacheControl(r *http.Request) string {
+	q := r.URL.Query()
+	tag := firstNonEmpty(queryVal(q, "tag", "Tag"), chi.URLParam(r, "tag"))
+	if tag != "" {
+		return "public, max-age=31536000, immutable"
+	}
+	return "public, max-age=604800"
 }
 
 func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) {
@@ -152,14 +189,36 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	q := r.URL.Query()
+	maxWidth := normalizeImageDim(firstNonEmpty(queryVal(q, "maxWidth", "MaxWidth"), chi.URLParam(r, "maxWidth")))
+	maxHeight := normalizeImageDim(firstNonEmpty(queryVal(q, "maxHeight", "MaxHeight"), chi.URLParam(r, "maxHeight")))
+	width := normalizeImageDim(queryVal(q, "width", "Width"))
+	height := normalizeImageDim(queryVal(q, "height", "Height"))
+	fillWidth := normalizeImageDim(queryVal(q, "fillWidth", "FillWidth"))
+	fillHeight := normalizeImageDim(queryVal(q, "fillHeight", "FillHeight"))
+	quality := strings.TrimSpace(queryVal(q, "quality", "Quality"))
+	format := strings.TrimSpace(firstNonEmpty(queryVal(q, "format", "Format"), chi.URLParam(r, "format")))
+	blur := strings.TrimSpace(queryVal(q, "blur", "Blur"))
+	backgroundColor := strings.TrimSpace(queryVal(q, "backgroundColor", "BackgroundColor"))
+	foregroundLayer := strings.TrimSpace(queryVal(q, "foregroundLayer", "ForegroundLayer"))
+
+	hasResizeDim := fillWidth != "" || fillHeight != "" || maxWidth != "" || maxHeight != "" || width != "" || height != ""
+	if format == "" && hasResizeDim && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "image/webp") {
+		format = "webp"
+	}
+
 	cacheKey := buildImageCacheKey(
 		itemID,
 		imageType,
 		imageIndex,
-		queryVal(q, "maxWidth", "MaxWidth"),
-		queryVal(q, "maxHeight", "MaxHeight"),
-		queryVal(q, "quality", "Quality"),
-		queryVal(q, "format", "Format"),
+		maxWidth,
+		maxHeight,
+		width,
+		height,
+		fillWidth,
+		fillHeight,
+		quality,
+		format,
+		blur,
 	)
 
 	cacheDir := h.imageCacheDir()
@@ -169,7 +228,7 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 	etag := `"` + cacheKey + `"`
 	if inm := strings.TrimSpace(r.Header.Get("If-None-Match")); inm != "" && inm == etag {
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", "public, max-age=604800")
+		w.Header().Set("Cache-Control", imageCacheControl(r))
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -187,39 +246,127 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Cache miss: fetch from upstream
+	// Cache miss: coalesce concurrent fetches for the same cacheKey via singleflight.
 	if h.pool == nil {
 		writeError(w, http.StatusServiceUnavailable, "upstream pool unavailable")
 		return
 	}
-	srv, err := h.pool.GetDecryptedServer(ctx, serverID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "upstream server not found")
+
+	upstreamQuery := url.Values{}
+	if maxWidth != "" {
+		upstreamQuery.Set("maxWidth", maxWidth)
+	}
+	if maxHeight != "" {
+		upstreamQuery.Set("maxHeight", maxHeight)
+	}
+	if width != "" {
+		upstreamQuery.Set("width", width)
+	}
+	if height != "" {
+		upstreamQuery.Set("height", height)
+	}
+	if fillWidth != "" {
+		upstreamQuery.Set("fillWidth", fillWidth)
+	}
+	if fillHeight != "" {
+		upstreamQuery.Set("fillHeight", fillHeight)
+	}
+	if quality != "" {
+		upstreamQuery.Set("quality", quality)
+	}
+	if format != "" {
+		upstreamQuery.Set("format", format)
+	}
+	if blur != "" {
+		upstreamQuery.Set("blur", blur)
+	}
+	if backgroundColor != "" {
+		upstreamQuery.Set("backgroundColor", backgroundColor)
+	}
+	if foregroundLayer != "" {
+		upstreamQuery.Set("foregroundLayer", foregroundLayer)
+	}
+
+	flightKey := cacheDir + "\x00" + cacheKey
+	v, _, _ := imgFlight.Do(flightKey, func() (any, error) {
+		if data, readErr := os.ReadFile(binPath); readErr == nil && len(data) > 0 {
+			ct := ""
+			if ctBytes, ctErr := os.ReadFile(ctPath); ctErr == nil {
+				ct = strings.TrimSpace(string(ctBytes))
+			}
+			if ct == "" {
+				ct = http.DetectContentType(data)
+			}
+			return &imageFetchResult{
+				data:        data,
+				contentType: ct,
+				status:      http.StatusOK,
+			}, nil
+		}
+
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+
+		srv, srvErr := h.pool.GetDecryptedServer(fetchCtx, serverID)
+		if srvErr != nil {
+			if errors.Is(srvErr, sql.ErrNoRows) {
+				return &imageFetchResult{status: http.StatusNotFound, err: srvErr, notFoundMsg: "upstream server not found"}, nil
+			}
+			h.logger.Error("decrypt upstream server for image failed", "server_id", serverID, "error", srvErr)
+			return &imageFetchResult{status: http.StatusBadGateway, err: srvErr}, nil
+		}
+
+		client := h.client
+		if client == nil {
+			client = upstream.NewClient()
+		}
+
+		data, contentType, status, fetchErr := client.FetchImage(fetchCtx, *srv, remoteID, upstreamType, upstreamQuery)
+		if fetchErr != nil {
+			h.logger.Warn("fetch upstream image failed", "item_id", itemID, "server_id", serverID, "status", status, "error", fetchErr)
+			return &imageFetchResult{status: status, err: fetchErr}, nil
+		}
+		if status != http.StatusOK || len(data) == 0 {
+			return &imageFetchResult{status: status}, nil
+		}
+
+		if strings.TrimSpace(contentType) == "" {
+			contentType = http.DetectContentType(data)
+		}
+
+		if ctWriteErr := writeFileAtomic(ctPath, []byte(contentType)); ctWriteErr != nil {
+			h.logger.Warn("cache image content-type write failed", "error", ctWriteErr)
+		}
+		if binWriteErr := writeFileAtomic(binPath, data); binWriteErr != nil {
+			h.logger.Warn("cache image payload write failed", "error", binWriteErr)
+		}
+
+		return &imageFetchResult{
+			data:        data,
+			contentType: contentType,
+			status:      http.StatusOK,
+		}, nil
+	})
+
+	res := v.(*imageFetchResult)
+	if res.err != nil {
+		if res.status == http.StatusNotFound {
+			msg := res.notFoundMsg
+			if msg == "" {
+				msg = "upstream image not found"
+			}
+			writeError(w, http.StatusNotFound, msg)
 			return
 		}
-		h.logger.Error("decrypt upstream server for image failed", "server_id", serverID, "error", err)
+		if res.notFoundMsg == "" && res.status == 0 {
+			writeError(w, http.StatusBadGateway, "failed to fetch upstream image")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream server unavailable")
 		return
 	}
-
-	client := h.client
-	if client == nil {
-		client = upstream.NewClient()
-	}
-
-	data, contentType, status, err := client.FetchImage(ctx, *srv, remoteID, upstreamType, q)
-	if err != nil {
-		h.logger.Warn("fetch upstream image failed", "item_id", itemID, "server_id", serverID, "status", status, "error", err)
-		if status == http.StatusNotFound {
-			writeError(w, http.StatusNotFound, "upstream image not found")
-			return
-		}
-		writeError(w, http.StatusBadGateway, "failed to fetch upstream image")
-		return
-	}
-	if status != http.StatusOK || len(data) == 0 {
-		if status == http.StatusNotFound {
+	if res.status != http.StatusOK || len(res.data) == 0 {
+		if res.status == http.StatusNotFound {
 			writeError(w, http.StatusNotFound, "upstream image not found")
 			return
 		}
@@ -227,25 +374,14 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if strings.TrimSpace(contentType) == "" {
-		contentType = http.DetectContentType(data)
-	}
-
-	if err := writeFileAtomic(ctPath, []byte(contentType)); err != nil {
-		h.logger.Warn("cache image content-type write failed", "error", err)
-	}
-	if err := writeFileAtomic(binPath, data); err != nil {
-		h.logger.Warn("cache image payload write failed", "error", err)
-	}
-
-	serveCachedImage(w, r, contentType, etag, data)
+	serveCachedImage(w, r, res.contentType, etag, res.data)
 }
 
 func serveCachedImage(w http.ResponseWriter, r *http.Request, contentType, etag string, data []byte) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "public, max-age=604800")
+	w.Header().Set("Cache-Control", imageCacheControl(r))
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return

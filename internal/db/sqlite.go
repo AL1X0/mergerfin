@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -19,9 +20,16 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// DB wraps a SQLite connection pool configured for WAL mode and foreign key enforcement.
+const (
+	writerPragmas = "_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_txlock=immediate"
+	readerPragmas = "_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=query_only(ON)"
+)
+
+// DB wraps separate SQLite writer and concurrent reader connection pools configured
+// for WAL mode and foreign key enforcement.
 type DB struct {
-	sqlDB *sql.DB
+	sqlDB  *sql.DB
+	readDB *sql.DB
 }
 
 // Open opens (or creates) the SQLite database at dbPath, runs embedded migrations,
@@ -40,18 +48,23 @@ func Open(ctx context.Context, dbPath string, defaultServerName string) (*DB, er
 		}
 	}
 
-	dsn := buildDSN(dbPath)
-	sqlDB, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite %q: %w", dbPath, err)
+	basePath := dbPath
+	if dbPath == ":memory:" {
+		basePath = fmt.Sprintf("file:mem_%s?mode=memory&cache=shared", idgen.NewRandomHex32())
 	}
 
-	sqlDB.SetMaxOpenConns(4)
-	sqlDB.SetMaxIdleConns(4)
+	writeDSN := buildDSN(basePath, writerPragmas)
+	sqlDB, err := sql.Open("sqlite", writeDSN)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite writer %q: %w", dbPath, err)
+	}
+
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("ping sqlite %q: %w", dbPath, err)
+		return nil, fmt.Errorf("ping sqlite writer %q: %w", dbPath, err)
 	}
 
 	d := &DB{sqlDB: sqlDB}
@@ -65,38 +78,68 @@ func Open(ctx context.Context, dbPath string, defaultServerName string) (*DB, er
 		return nil, fmt.Errorf("seed defaults: %w", err)
 	}
 
+	readDSN := buildDSN(basePath, readerPragmas)
+	readDB, err := sql.Open("sqlite", readDSN)
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("open sqlite reader %q: %w", dbPath, err)
+	}
+
+	readDB.SetMaxOpenConns(16)
+	readDB.SetMaxIdleConns(8)
+
+	if err := readDB.PingContext(ctx); err != nil {
+		_ = readDB.Close()
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("ping sqlite reader %q: %w", dbPath, err)
+	}
+	d.readDB = readDB
+
 	return d, nil
 }
 
-// Close closes the underlying SQLite connection pool.
+// Close closes both the reader and writer SQLite connection pools.
 func (d *DB) Close() error {
-	if d == nil || d.sqlDB == nil {
+	if d == nil {
 		return nil
 	}
-	return d.sqlDB.Close()
+	var errs []error
+	if d.readDB != nil {
+		if err := d.readDB.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if d.sqlDB != nil {
+		if err := d.sqlDB.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// SqlDB returns the underlying *sql.DB handle.
+// SqlDB returns the underlying writer *sql.DB handle.
 func (d *DB) SqlDB() *sql.DB {
 	return d.sqlDB
 }
 
-func buildDSN(dbPath string) string {
-	pragmas := "_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_txlock=immediate"
-
-	if dbPath == ":memory:" {
-		return "file::memory:?mode=memory&cache=shared&" + pragmas
+func (d *DB) reader() *sql.DB {
+	if d.readDB != nil {
+		return d.readDB
 	}
-	if strings.HasPrefix(dbPath, "file:") {
-		if strings.Contains(dbPath, "?") {
-			return dbPath + "&" + pragmas
+	return d.sqlDB
+}
+
+func buildDSN(basePath, pragmas string) string {
+	if strings.HasPrefix(basePath, "file:") {
+		if strings.Contains(basePath, "?") {
+			return basePath + "&" + pragmas
 		}
-		return dbPath + "?" + pragmas
+		return basePath + "?" + pragmas
 	}
 
 	u := url.URL{
 		Scheme:   "file",
-		Path:     dbPath,
+		Path:     basePath,
 		RawQuery: pragmas,
 	}
 	return u.String()

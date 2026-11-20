@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/AL1X0/mergerfin/internal/db"
 )
+
+const touchThrottleInterval = 5 * time.Minute
+
+var sessionTouchCache sync.Map
 
 type contextKey struct{}
 
@@ -99,7 +105,18 @@ func resolveAuthContext(r *http.Request, database *db.DB) (*Context, bool) {
 		return nil, false
 	}
 
-	_ = database.TouchSession(ctx, session.Token)
+	now := time.Now()
+	shouldTouch := true
+	if last, ok := sessionTouchCache.Load(session.Token); ok {
+		if lastTime, ok := last.(time.Time); ok && now.Sub(lastTime) < touchThrottleInterval {
+			shouldTouch = false
+		}
+	}
+	if shouldTouch {
+		if err := database.TouchSession(ctx, session.Token); err == nil {
+			sessionTouchCache.Store(session.Token, now)
+		}
+	}
 
 	return &Context{
 		User:    *user,

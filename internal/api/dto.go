@@ -122,6 +122,15 @@ type BaseItemDto struct {
 	Tags                    []string          `json:"Tags"`
 	UserData                UserItemDataDto   `json:"UserData"`
 	MediaSources            []MediaSourceDto  `json:"MediaSources,omitempty"`
+	MediaSourceCount        int               `json:"MediaSourceCount,omitempty"`
+}
+
+type batchUnplayedCounter interface {
+	BatchCountUnplayedInSubtrees(ctx context.Context, userID string, parentIDs []string) (map[string]int, error)
+}
+
+type batchSourceCounter interface {
+	CountSourcesByItemIDs(ctx context.Context, itemIDs []string) (map[string]int, error)
 }
 
 func ensureHex32(id string) string {
@@ -169,15 +178,57 @@ func libraryToDTO(ctx context.Context, database *db.DB, serverID, userID string,
 	}
 }
 
+func isFolderItemType(itemType string) bool {
+	return itemType == "Series" || itemType == "Season" || itemType == "CollectionFolder" || itemType == "Folder" || itemType == "BoxSet"
+}
+
+func parseFieldSet(rawFields string) map[string]bool {
+	trimmed := strings.TrimSpace(rawFields)
+	if trimmed == "" {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, part := range strings.Split(trimmed, ",") {
+		if f := strings.ToLower(strings.TrimSpace(part)); f != "" {
+			out[f] = true
+		}
+	}
+	return out
+}
+
 func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string, items []db.VirtualItem, includeMediaSources bool) ([]BaseItemDto, error) {
+	return buildItemDTOsWithFields(ctx, database, serverID, userID, items, includeMediaSources, "")
+}
+
+func buildItemDTOsWithFields(ctx context.Context, database *db.DB, serverID, userID string, items []db.VirtualItem, includeMediaSources bool, rawFields string) ([]BaseItemDto, error) {
 	dtos := make([]BaseItemDto, 0, len(items))
 	if len(items) == 0 {
 		return dtos, nil
 	}
 
+	fieldSet := parseFieldSet(rawFields)
+	fullMode := len(fieldSet) == 0
+	wantOverview := fullMode || fieldSet["overview"]
+	wantPeople := fullMode || fieldSet["people"]
+	wantFullSources := includeMediaSources && (fullMode || fieldSet["mediasources"] || fieldSet["mediastreams"])
+	wantSourceCount := !wantFullSources && (includeMediaSources || fieldSet["mediasourcecount"])
+
 	itemIDs := make([]string, len(items))
+	var nonFolderIDs []string
+	var subtreeIDs []string
+	subtreeSeen := make(map[string]struct{})
 	for i, it := range items {
 		itemIDs[i] = it.ID
+		if !isFolderItemType(it.ItemType) {
+			nonFolderIDs = append(nonFolderIDs, it.ID)
+		}
+		if it.ItemType == "Series" || it.ItemType == "Season" {
+			sid := ensureHex32(it.ID)
+			if _, seen := subtreeSeen[sid]; !seen {
+				subtreeSeen[sid] = struct{}{}
+				subtreeIDs = append(subtreeIDs, sid)
+			}
+		}
 	}
 
 	var userDataMap map[string]db.UserItemData
@@ -189,12 +240,48 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 		}
 	}
 
+	var unplayedMap map[string]int
+	if database != nil && userID != "" && len(subtreeIDs) > 0 {
+		if bc, ok := any(database).(batchUnplayedCounter); ok {
+			if counts, err := bc.BatchCountUnplayedInSubtrees(ctx, userID, subtreeIDs); err == nil {
+				unplayedMap = counts
+			}
+		} else {
+			unplayedMap = make(map[string]int, len(subtreeIDs))
+			for _, pid := range subtreeIDs {
+				if cnt, err := database.CountUnplayedInSubtree(ctx, userID, pid); err == nil {
+					unplayedMap[pid] = cnt
+				}
+			}
+		}
+	}
+
 	var sourcesMap map[string][]db.ItemSource
-	if includeMediaSources && database != nil {
-		var err error
-		sourcesMap, err = database.ListSourcesByItemIDs(ctx, itemIDs)
-		if err != nil {
-			return nil, err
+	var sourceCountMap map[string]int
+	if database != nil && len(nonFolderIDs) > 0 {
+		if wantFullSources {
+			var err error
+			sourcesMap, err = database.ListSourcesByItemIDs(ctx, nonFolderIDs)
+			if err != nil {
+				return nil, err
+			}
+		} else if wantSourceCount {
+			if sc, ok := any(database).(batchSourceCounter); ok {
+				var err error
+				sourceCountMap, err = sc.CountSourcesByItemIDs(ctx, nonFolderIDs)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				tmpSources, err := database.ListSourcesByItemIDs(ctx, nonFolderIDs)
+				if err != nil {
+					return nil, err
+				}
+				sourceCountMap = make(map[string]int, len(tmpSources))
+				for id, srcs := range tmpSources {
+					sourceCountMap[id] = len(srcs)
+				}
+			}
 		}
 	}
 
@@ -231,7 +318,7 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 
 	for _, it := range items {
 		itemID := ensureHex32(it.ID)
-		isFolder := it.ItemType == "Series" || it.ItemType == "Season" || it.ItemType == "CollectionFolder" || it.ItemType == "Folder" || it.ItemType == "BoxSet"
+		isFolder := isFolderItemType(it.ItemType)
 
 		mediaType := ""
 		if it.ItemType == "Movie" || it.ItemType == "Episode" {
@@ -259,7 +346,14 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 		}
 
 		studios := parseStudios(it.StudiosJSON)
-		people := parsePeople(it.PeopleJSON)
+		people := []PersonDto{}
+		if wantPeople {
+			people = parsePeople(it.PeopleJSON)
+		}
+		overview := ""
+		if wantOverview {
+			overview = it.Overview
+		}
 		providerIDs := parseStringMap(it.ProviderIDsJSON)
 
 		taglines := []string{}
@@ -286,9 +380,10 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 			Key:                   itemID,
 			LastPlayedDate:        ud.LastPlayedAt,
 		}
-		if (it.ItemType == "Series" || it.ItemType == "Season") && database != nil && userID != "" {
-			if unplayed, err := database.CountUnplayedInSubtree(ctx, userID, itemID); err == nil {
-				userDataDTO.UnplayedItemCount = &unplayed
+		if (it.ItemType == "Series" || it.ItemType == "Season") && unplayedMap != nil {
+			if unplayed, ok := unplayedMap[itemID]; ok {
+				v := unplayed
+				userDataDTO.UnplayedItemCount = &v
 			}
 		}
 
@@ -329,7 +424,7 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 			SortName:                it.SortName,
 			PremiereDate:            it.PremiereDate,
 			ExternalUrls:            []any{},
-			Overview:                it.Overview,
+			Overview:                overview,
 			Taglines:                taglines,
 			Genres:                  genres,
 			GenreItems:              genreItems,
@@ -351,23 +446,32 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 			ParentBackdropItemId:    parentBackdropItemID,
 			ParentBackdropImageTags: parentBackdropImageTags,
 			IsFolder:                isFolder,
-			Type:              it.ItemType,
-			MediaType:         mediaType,
-			LocationType:      "FileSystem",
-			ImageTags:         imageTags,
-			BackdropImageTags: backdropTags,
-			ProviderIds:       providerIDs,
-			RemoteTrailers:    []any{},
-			LockedFields:      []string{},
-			Tags:              []string{},
-			UserData:          userDataDTO,
+			Type:                    it.ItemType,
+			MediaType:               mediaType,
+			LocationType:            "FileSystem",
+			ImageTags:               imageTags,
+			BackdropImageTags:       backdropTags,
+			ProviderIds:             providerIDs,
+			RemoteTrailers:          []any{},
+			LockedFields:            []string{},
+			Tags:                    []string{},
+			UserData:                userDataDTO,
 		}
 
-		if includeMediaSources && !isFolder {
-			rawSources := sourcesMap[it.ID]
-			dto.MediaSources = make([]MediaSourceDto, 0, len(rawSources))
-			for _, src := range rawSources {
-				dto.MediaSources = append(dto.MediaSources, toMediaSourceDto(src))
+		if !isFolder {
+			if wantFullSources {
+				rawSources := sourcesMap[it.ID]
+				dto.MediaSources = make([]MediaSourceDto, 0, len(rawSources))
+				for _, src := range rawSources {
+					dto.MediaSources = append(dto.MediaSources, toMediaSourceDto(src))
+				}
+				dto.MediaSourceCount = len(rawSources)
+			} else if wantSourceCount {
+				cnt, ok := sourceCountMap[it.ID]
+				if !ok {
+					cnt = sourceCountMap[itemID]
+				}
+				dto.MediaSourceCount = cnt
 			}
 		}
 

@@ -30,7 +30,7 @@ func (h *apiHandler) handleGetSeasons(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, seasons, false)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, seasons, false, queryFirst(r, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format seasons")
 		return
@@ -101,7 +101,7 @@ func (h *apiHandler) handleGetEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, episodes, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, episodes, true, queryVal(q, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format episodes")
 		return
@@ -157,7 +157,7 @@ func (h *apiHandler) handleGetNextUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serverID, _ := h.serverIdentity(ctx)
-	dtos, err := buildItemDTOs(ctx, h.db, serverID, userID, items, true)
+	dtos, err := buildItemDTOsWithFields(ctx, h.db, serverID, userID, items, true, queryVal(q, "Fields", "fields"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to format next up")
 		return

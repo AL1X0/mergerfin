@@ -2,11 +2,13 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,7 +18,7 @@ import (
 
 const (
 	defaultReconcileInterval = 15 * time.Second
-	defaultDebounceDelay     = 1500 * time.Millisecond
+	defaultDebounceDelay     = 5 * time.Second
 	wsDialTimeout            = 10 * time.Second
 	wsWriteTimeout           = 5 * time.Second
 )
@@ -33,6 +35,12 @@ var defaultBackoffSchedule = []time.Duration{
 type DeltaSyncer interface {
 	TriggerSync(ctx context.Context) error
 	SyncServer(ctx context.Context, srv db.UpstreamServer) error
+}
+
+// UserDataEventHandler is an optional interface implemented by syncers that handle
+// upstream UserDataChanged events incrementally without triggering a full library sync.
+type UserDataEventHandler interface {
+	SyncUserDataEvent(ctx context.Context, srv db.UpstreamServer, data any)
 }
 
 // Broadcaster forwards upstream WebSocket notifications to connected downstream clients.
@@ -276,6 +284,55 @@ func (m *ListenerManager) connectAndListen(ctx context.Context, srv db.UpstreamS
 		<-debounceDone
 	}()
 
+	var writeMu sync.Mutex
+	kaCtx, kaCancel := context.WithCancel(ctx)
+	kaDone := make(chan struct{})
+	intervalCh := make(chan time.Duration, 1)
+
+	sendKeepAlive := func() error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeCtx, writeCancel := context.WithTimeout(kaCtx, wsWriteTimeout)
+		defer writeCancel()
+		return wsjson.Write(writeCtx, conn, wsMessage{
+			MessageType: "KeepAlive",
+			Data:        "",
+		})
+	}
+
+	go func() {
+		defer close(kaDone)
+		var kaTicker *time.Ticker
+		var kaTickC <-chan time.Time
+		defer func() {
+			if kaTicker != nil {
+				kaTicker.Stop()
+			}
+		}()
+
+		for {
+			select {
+			case <-kaCtx.Done():
+				return
+			case d := <-intervalCh:
+				if kaTicker != nil {
+					kaTicker.Stop()
+				}
+				kaTicker = time.NewTicker(d)
+				kaTickC = kaTicker.C
+			case <-kaTickC:
+				if err := sendKeepAlive(); err != nil {
+					_ = conn.CloseNow()
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		kaCancel()
+		<-kaDone
+	}()
+
 	for {
 		var msg wsMessage
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -283,24 +340,31 @@ func (m *ListenerManager) connectAndListen(ctx context.Context, srv db.UpstreamS
 		}
 
 		switch strings.ToLower(strings.TrimSpace(msg.MessageType)) {
-		case "forcekeepalive", "keepalive":
-			writeCtx, writeCancel := context.WithTimeout(ctx, wsWriteTimeout)
-			err := wsjson.Write(writeCtx, conn, wsMessage{
-				MessageType: "KeepAlive",
-				Data:        "",
-			})
-			writeCancel()
-			if err != nil {
+		case "forcekeepalive":
+			if err := sendKeepAlive(); err != nil {
 				return err
 			}
+			nextInterval := parseKeepAliveInterval(msg.Data)
+			select {
+			case <-intervalCh:
+			default:
+			}
+			intervalCh <- nextInterval
 
-		case "librarychanged", "userdatachanged":
+		case "keepalive":
+			// Upstream Jellyfin echoes KeepAlive back to clients; ignore it to avoid a ping-pong loop.
+
+		case "librarychanged":
 			select {
 			case triggerCh <- struct{}{}:
 			default:
 			}
-			if m.ws != nil {
-				m.ws.Broadcast(msg.MessageType, msg.Data)
+
+		case "userdatachanged":
+			if udHandler, ok := m.syncer.(UserDataEventHandler); ok {
+				udCtx, udCancel := context.WithTimeout(ctx, 10*time.Second)
+				udHandler.SyncUserDataEvent(udCtx, srv, msg.Data)
+				udCancel()
 			}
 		}
 	}
@@ -347,17 +411,53 @@ func (m *ListenerManager) runDebounceSync(ctx context.Context, srv db.UpstreamSe
 			if m.syncer != nil {
 				syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 				err := m.syncer.SyncServer(syncCtx, srv)
-				if err != nil && ctx.Err() == nil {
+				cancel()
+				if err != nil {
+					if ctx.Err() != nil {
+						continue
+					}
 					m.logger.Warn("delta SyncServer failed, falling back to TriggerSync",
 						"server_id", srv.ID,
 						"error", err,
 					)
-					if trigErr := m.syncer.TriggerSync(syncCtx); trigErr != nil && ctx.Err() == nil {
-						m.logger.Warn("fallback TriggerSync failed", "server_id", srv.ID, "error", trigErr)
+					fbCtx, fbCancel := context.WithTimeout(ctx, 2*time.Minute)
+					trigErr := m.syncer.TriggerSync(fbCtx)
+					fbCancel()
+					if trigErr != nil {
+						if ctx.Err() == nil {
+							m.logger.Warn("fallback TriggerSync failed", "server_id", srv.ID, "error", trigErr)
+						}
+						continue
 					}
 				}
-				cancel()
+			}
+			if m.ws != nil && ctx.Err() == nil {
+				m.ws.Broadcast("LibraryChanged", map[string]any{
+					"ItemsAdded":   []string{},
+					"ItemsUpdated": []string{},
+					"ItemsRemoved": []string{},
+				})
 			}
 		}
 	}
+}
+
+func parseKeepAliveInterval(data any) time.Duration {
+	var seconds float64
+	switch v := data.(type) {
+	case float64:
+		seconds = v
+	case int:
+		seconds = float64(v)
+	case int64:
+		seconds = float64(v)
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			seconds = f
+		}
+	}
+	if seconds <= 0 {
+		seconds = 60
+	}
+	return max(5*time.Second, time.Duration(seconds*float64(time.Second)*0.5))
 }
