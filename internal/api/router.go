@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,7 +77,21 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	if deps.WSHub != nil {
 		r.Get("/socket", deps.WSHub.HandleWebSocket)
+		r.Get("/embywebsocket", deps.WSHub.HandleWebSocket)
 	}
+
+	serveFavicon := func(w http.ResponseWriter, r *http.Request) {
+		if deps.Config != nil && strings.TrimSpace(deps.Config.WebDir) != "" {
+			favPath := filepath.Join(deps.Config.WebDir, "favicon.ico")
+			if info, err := os.Stat(favPath); err == nil && !info.IsDir() {
+				http.ServeFile(w, r, favPath)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	r.Get("/favicon.ico", serveFavicon)
+	r.Head("/favicon.ico", serveFavicon)
 
 	redirectToWeb := func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/web/index.html", http.StatusFound)
@@ -93,102 +108,146 @@ func NewRouter(deps RouterDeps) http.Handler {
 	}
 
 	// Public Jellyfin handshake, branding, localization, and auth endpoints.
-	r.Get("/System/Ping", h.handlePing)
-	r.Post("/System/Ping", h.handlePing)
-	r.Get("/System/Info/Public", h.handleSystemInfoPublic)
-	r.Get("/System/Endpoint", h.handleSystemEndpoint)
-	r.Get("/Branding/Configuration", h.handleBrandingConfiguration)
-	r.Get("/Branding/Css", h.handleBrandingCSS)
-	r.Get("/Branding/Css.css", h.handleBrandingCSS)
-	r.Get("/QuickConnect/Enabled", h.handleQuickConnectEnabled)
-	r.Get("/Plugins", h.handleEmptyArray)
-	r.Get("/Playback/BitrateTest", h.handleBitrateTest)
-	r.Get("/Localization/Options", h.handleEmptyArray)
-	r.Get("/Localization/Countries", h.handleEmptyArray)
-	r.Get("/Localization/Cultures", h.handleEmptyArray)
-	r.Get("/Localization/ParentalRatings", h.handleEmptyArray)
-	r.Get("/Users/Public", h.handlePublicUsers)
-	r.Post("/Users/AuthenticateByName", h.handleAuthenticateByName)
+	r.Get("/system/ping", h.handlePing)
+	r.Post("/system/ping", h.handlePing)
+	r.Get("/system/info/public", h.handleSystemInfoPublic)
+	r.Get("/system/endpoint", h.handleSystemEndpoint)
+	r.Get("/branding/configuration", h.handleBrandingConfiguration)
+	r.Get("/branding/css", h.handleBrandingCSS)
+	r.Get("/branding/css.css", h.handleBrandingCSS)
+	r.Get("/quickconnect/enabled", h.handleQuickConnectEnabled)
+	r.Get("/plugins", h.handleEmptyArray)
+	r.Get("/playback/bitratetest", h.handleBitrateTest)
+	r.Get("/localization/options", h.handleEmptyArray)
+	r.Get("/localization/countries", h.handleEmptyArray)
+	r.Get("/localization/cultures", h.handleEmptyArray)
+	r.Get("/localization/parentalratings", h.handleEmptyArray)
+	r.Get("/users/public", h.handlePublicUsers)
+	r.Post("/users/authenticatebyname", h.handleAuthenticateByName)
 
 	// Public or optional-auth image routes (jellyfin-web/clients may pass ?api_key= or ?tag=).
 	r.Group(func(ir chi.Router) {
 		ir.Use(auth.OptionalUser(deps.DB))
-		ir.Get("/Items/{itemId}/Images/{imageType}", h.handleGetItemImage)
-		ir.Head("/Items/{itemId}/Images/{imageType}", h.handleGetItemImage)
-		ir.Get("/Items/{itemId}/Images/{imageType}/{imageIndex}", h.handleGetItemImage)
-		ir.Head("/Items/{itemId}/Images/{imageType}/{imageIndex}", h.handleGetItemImage)
+		ir.Get("/items/{itemId}/images/{imageType}", h.handleGetItemImage)
+		ir.Head("/items/{itemId}/images/{imageType}", h.handleGetItemImage)
+		ir.Get("/items/{itemId}/images/{imageType}/{imageIndex}", h.handleGetItemImage)
+		ir.Head("/items/{itemId}/images/{imageType}/{imageIndex}", h.handleGetItemImage)
 	})
 
 	// Authenticated Jellyfin endpoints.
 	r.Group(func(ar chi.Router) {
 		ar.Use(auth.Authenticate(deps.DB))
-		ar.Get("/System/Info", h.handleSystemInfo)
-		ar.Get("/Users", h.handleUsers)
-		ar.Get("/Users/Me", h.handleUserMe)
-		ar.Get("/Users/{userId}", h.handleUserByID)
-		ar.Get("/DisplayPreferences/{displayPreferencesId}", h.handleGetDisplayPreferences)
-		ar.Post("/DisplayPreferences/{displayPreferencesId}", h.handlePostDisplayPreferences)
-		ar.Post("/Sessions/Capabilities", h.handleNoContent)
-		ar.Post("/Sessions/Capabilities/Full", h.handleNoContent)
-		ar.Post("/Sessions/Logout", h.handleLogout)
-		ar.Get("/Sessions", h.handleSessions)
+		ar.Get("/system/info", h.handleSystemInfo)
+		ar.Get("/users", h.handleUsers)
+		ar.Get("/users/me", h.handleUserMe)
+		ar.Get("/users/{userId}", h.handleUserByID)
+		ar.Post("/users/configuration", h.handleNoContent)
+		ar.Post("/users/{userId}/configuration", h.handleNoContent)
+		ar.Get("/displaypreferences/{displayPreferencesId}", h.handleGetDisplayPreferences)
+		ar.Post("/displaypreferences/{displayPreferencesId}", h.handlePostDisplayPreferences)
+		ar.Post("/sessions/capabilities", h.handleNoContent)
+		ar.Post("/sessions/capabilities/full", h.handleNoContent)
+		ar.Post("/sessions/logout", h.handleLogout)
+		ar.Get("/sessions", h.handleSessions)
 
-		// Catalog, library views, and show endpoints (modern + legacy /Users/{userId} routes).
-		ar.Get("/UserViews", h.handleUserViews)
-		ar.Get("/Views", h.handleUserViews)
-		ar.Get("/Users/{userId}/Views", h.handleUserViews)
+		// Catalog, library views, and show endpoints (modern + legacy /users/{userId} routes).
+		ar.Get("/userviews", h.handleUserViews)
+		ar.Get("/views", h.handleUserViews)
+		ar.Get("/users/{userId}/views", h.handleUserViews)
+		ar.Get("/userviews/groupingoptions", h.handleEmptyArray)
 
-		ar.Get("/Items/Latest", h.handleGetLatestItems)
-		ar.Get("/Users/{userId}/Items/Latest", h.handleGetLatestItems)
-		ar.Get("/Items/Resume", h.handleGetResumeItems)
-		ar.Get("/Users/{userId}/Items/Resume", h.handleGetResumeItems)
-		ar.Get("/Items/Filters", h.handleGetFilters)
-		ar.Get("/Items/Filters2", h.handleGetFilters)
-		ar.Get("/Items", h.handleGetItems)
-		ar.Get("/Users/{userId}/Items", h.handleGetItems)
-		ar.Get("/Items/{itemId}", h.handleGetItemByID)
-		ar.Get("/Users/{userId}/Items/{itemId}", h.handleGetItemByID)
-		ar.Get("/Items/{itemId}/Similar", h.handleGetSimilarItems)
+		ar.Get("/items/latest", h.handleGetLatestItems)
+		ar.Get("/users/{userId}/items/latest", h.handleGetLatestItems)
+		ar.Get("/items/resume", h.handleGetResumeItems)
+		ar.Get("/users/{userId}/items/resume", h.handleGetResumeItems)
+		ar.Get("/useritems/resume", h.handleUserItemsResume)
+		ar.Get("/useritems/{itemId}/userdata", h.handleGetUserItemUserData)
+		ar.Get("/users/{userId}/items/{itemId}/userdata", h.handleGetUserItemUserData)
+		ar.Post("/useritems/{itemId}/rating", h.handleUserItemRating)
+		ar.Delete("/useritems/{itemId}/rating", h.handleUserItemRating)
+		ar.Post("/users/{userId}/items/{itemId}/rating", h.handleUserItemRating)
+		ar.Delete("/users/{userId}/items/{itemId}/rating", h.handleUserItemRating)
+		ar.Get("/items/filters", h.handleGetFilters)
+		ar.Get("/items/filters2", h.handleGetFilters)
+		ar.Get("/items/counts", h.handleItemsCounts)
+		ar.Get("/users/{userId}/items/counts", h.handleItemsCounts)
+		ar.Get("/items/root", h.handleItemsRoot)
+		ar.Get("/users/{userId}/items/root", h.handleItemsRoot)
+		ar.Get("/items", h.handleGetItems)
+		ar.Get("/users/{userId}/items", h.handleGetItems)
+		ar.Get("/items/{itemId}", h.handleGetItemByID)
+		ar.Get("/users/{userId}/items/{itemId}", h.handleGetItemByID)
+		ar.Get("/items/{itemId}/similar", h.handleGetSimilarItems)
+		ar.Get("/items/{itemId}/ancestors", h.handleItemAncestors)
+		ar.Get("/users/{userId}/items/{itemId}/ancestors", h.handleItemAncestors)
+		ar.Get("/items/{itemId}/intros", h.handleEmptyQueryResult)
+		ar.Get("/users/{userId}/items/{itemId}/intros", h.handleEmptyQueryResult)
+		ar.Get("/items/{itemId}/themesongs", h.handleEmptyQueryResult)
+		ar.Get("/items/{itemId}/themevideos", h.handleEmptyQueryResult)
+		ar.Get("/items/{itemId}/thememedia", h.handleThemeMedia)
+		ar.Get("/users/{userId}/items/{itemId}/thememedia", h.handleThemeMedia)
+		ar.Get("/items/{itemId}/localtrailers", h.handleEmptyArray)
+		ar.Get("/users/{userId}/items/{itemId}/localtrailers", h.handleEmptyArray)
+		ar.Get("/items/{itemId}/specialfeatures", h.handleEmptyArray)
+		ar.Get("/users/{userId}/items/{itemId}/specialfeatures", h.handleEmptyArray)
 
-		ar.Get("/Shows/NextUp", h.handleGetNextUp)
-		ar.Get("/Shows/{seriesId}/Seasons", h.handleGetSeasons)
-		ar.Get("/Shows/{seriesId}/Episodes", h.handleGetEpisodes)
+		ar.Get("/shows/nextup", h.handleGetNextUp)
+		ar.Get("/shows/tvrecommended", h.handleShowsTVRecommended)
+		ar.Get("/shows/upcoming", h.handleEmptyQueryResult)
+		ar.Get("/shows/{seriesId}/seasons", h.handleGetSeasons)
+		ar.Get("/shows/{seriesId}/episodes", h.handleGetEpisodes)
+		ar.Get("/shows/{itemId}/similar", h.handleGetSimilarItems)
+
+		ar.Get("/genres", h.handleGenres)
+		ar.Get("/genres/{genreName}", h.handleGenreByName)
+		ar.Get("/studios", h.handleEmptyQueryResult)
+		ar.Get("/persons", h.handleEmptyQueryResult)
+		ar.Get("/search/hints", h.handleSearchHints)
+		ar.Get("/livetv/info", h.handleLiveTVInfo)
+		ar.Get("/syncplay/list", h.handleEmptyArray)
+		ar.Post("/syncplay/{action}", h.handleNoContent)
 
 		// Playback negotiation, active encodings cleanup, and media streaming.
-		ar.Post("/Items/{itemId}/PlaybackInfo", h.handlePlaybackInfo)
-		ar.Get("/Items/{itemId}/PlaybackInfo", h.handlePlaybackInfo)
-		ar.Delete("/Videos/ActiveEncodings", h.handleStopActiveEncodings)
+		ar.Post("/items/{itemId}/playbackinfo", h.handlePlaybackInfo)
+		ar.Get("/items/{itemId}/playbackinfo", h.handlePlaybackInfo)
+		ar.Post("/users/{userId}/items/{itemId}/playbackinfo", h.handlePlaybackInfo)
+		ar.Get("/users/{userId}/items/{itemId}/playbackinfo", h.handlePlaybackInfo)
+		ar.Delete("/videos/activeencodings", h.handleStopActiveEncodings)
 		if deps.Streamer != nil {
-			ar.Get("/Videos/{itemId}/stream", deps.Streamer.HandleDirectStream)
-			ar.Head("/Videos/{itemId}/stream", deps.Streamer.HandleDirectStream)
-			ar.Get("/Videos/{itemId}/stream.{ext}", deps.Streamer.HandleDirectStream)
-			ar.Head("/Videos/{itemId}/stream.{ext}", deps.Streamer.HandleDirectStream)
-			ar.Get("/Videos/{itemId}/master.m3u8", deps.Streamer.HandleHLSPlaylist)
-			ar.Get("/Videos/{itemId}/main.m3u8", deps.Streamer.HandleHLSPlaylist)
-			ar.Get("/Videos/{itemId}/live.m3u8", deps.Streamer.HandleHLSPlaylist)
-			ar.Get("/Videos/{itemId}/hls-proxy/*", deps.Streamer.HandleHLSProxy)
+			ar.Get("/videos/{itemId}/stream", deps.Streamer.HandleDirectStream)
+			ar.Head("/videos/{itemId}/stream", deps.Streamer.HandleDirectStream)
+			ar.Get("/videos/{itemId}/stream.{ext}", deps.Streamer.HandleDirectStream)
+			ar.Head("/videos/{itemId}/stream.{ext}", deps.Streamer.HandleDirectStream)
+			ar.Get("/videos/{itemId}/master.m3u8", deps.Streamer.HandleHLSPlaylist)
+			ar.Get("/videos/{itemId}/main.m3u8", deps.Streamer.HandleHLSPlaylist)
+			ar.Get("/videos/{itemId}/live.m3u8", deps.Streamer.HandleHLSPlaylist)
+			ar.Get("/videos/{itemId}/hls-proxy/*", deps.Streamer.HandleHLSProxy)
+			ar.Head("/videos/{itemId}/hls-proxy/*", deps.Streamer.HandleHLSProxy)
 		}
 
 		// Playstate reporting and watched/favorite sync endpoints.
-		ar.Post("/Sessions/Playing", h.handleSessionsPlaying)
-		ar.Post("/Sessions/Playing/Progress", h.handleSessionsPlayingProgress)
-		ar.Post("/Sessions/Playing/Stopped", h.handleSessionsPlayingStopped)
-		ar.Post("/UserPlayedItems/{itemId}", h.handleMarkPlayed)
-		ar.Delete("/UserPlayedItems/{itemId}", h.handleUnmarkPlayed)
-		ar.Post("/Users/{userId}/PlayedItems/{itemId}", h.handleMarkPlayed)
-		ar.Delete("/Users/{userId}/PlayedItems/{itemId}", h.handleUnmarkPlayed)
-		ar.Post("/UserFavoriteItems/{itemId}", h.handleMarkFavorite)
-		ar.Delete("/UserFavoriteItems/{itemId}", h.handleUnmarkFavorite)
-		ar.Post("/Users/{userId}/FavoriteItems/{itemId}", h.handleMarkFavorite)
-		ar.Delete("/Users/{userId}/FavoriteItems/{itemId}", h.handleUnmarkFavorite)
+		ar.Post("/sessions/playing", h.handleSessionsPlaying)
+		ar.Post("/sessions/playing/progress", h.handleSessionsPlayingProgress)
+		ar.Post("/sessions/playing/stopped", h.handleSessionsPlayingStopped)
+		ar.Post("/sessions/playing/ping", h.handleNoContent)
+		ar.Post("/sessions/viewing", h.handleNoContent)
+		ar.Post("/userplayeditems/{itemId}", h.handleMarkPlayed)
+		ar.Delete("/userplayeditems/{itemId}", h.handleUnmarkPlayed)
+		ar.Post("/users/{userId}/playeditems/{itemId}", h.handleMarkPlayed)
+		ar.Delete("/users/{userId}/playeditems/{itemId}", h.handleUnmarkPlayed)
+		ar.Post("/userfavoriteitems/{itemId}", h.handleMarkFavorite)
+		ar.Delete("/userfavoriteitems/{itemId}", h.handleUnmarkFavorite)
+		ar.Post("/users/{userId}/favoriteitems/{itemId}", h.handleMarkFavorite)
+		ar.Delete("/users/{userId}/favoriteitems/{itemId}", h.handleUnmarkFavorite)
 	})
 
-	return stripLegacyPrefix(r)
+	return normalizeRequestPath(r)
 }
 
-// stripLegacyPrefix strips a leading case-insensitive /emby or /mediabrowser
-// segment before routing so legacy Jellyfin/Emby clients hit standard routes.
-func stripLegacyPrefix(next http.Handler) http.Handler {
+// normalizeRequestPath strips a leading case-insensitive /emby or /mediabrowser
+// segment and lowercases Jellyfin API paths while preserving exact casing for
+// static web/admin assets and upstream /hls-proxy/ subpaths.
+func normalizeRequestPath(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		stripped := p
@@ -199,14 +258,33 @@ func stripLegacyPrefix(next http.Handler) http.Handler {
 		case len(p) >= len("/emby") && strings.EqualFold(p[:len("/emby")], "/emby") && (len(p) == len("/emby") || p[len("/emby")] == '/'):
 			stripped = p[len("/emby"):]
 		}
+		if stripped == "" {
+			stripped = "/"
+		}
 
-		if stripped != p {
-			if stripped == "" {
-				stripped = "/"
+		lower := strings.ToLower(stripped)
+		var normalized string
+		switch {
+		case lower == "/web" || strings.HasPrefix(lower, "/web/"):
+			normalized = "/web" + stripped[len("/web"):]
+		case lower == "/admin" || strings.HasPrefix(lower, "/admin/"):
+			normalized = "/admin" + stripped[len("/admin"):]
+		case strings.Contains(lower, "/hls-proxy/"):
+			idx := strings.Index(lower, "/hls-proxy/")
+			splitAt := idx + len("/hls-proxy/")
+			if splitAt <= len(stripped) {
+				normalized = lower[:splitAt] + stripped[splitAt:]
+			} else {
+				normalized = lower
 			}
+		default:
+			normalized = lower
+		}
+
+		if normalized != p {
 			r2 := r.Clone(r.Context())
 			u := *r.URL
-			u.Path = stripped
+			u.Path = normalized
 			u.RawPath = ""
 			r2.URL = &u
 			next.ServeHTTP(w, r2)

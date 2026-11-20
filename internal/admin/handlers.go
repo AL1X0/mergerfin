@@ -62,9 +62,11 @@ func NewHandler(database *db.DB, pool *upstream.Pool, syncer SyncTrigger, logger
 
 // Mount registers all /admin UI and /admin/api/* routes onto r.
 func (h *Handler) Mount(r chi.Router) {
-	r.Get("/admin", func(w http.ResponseWriter, r *http.Request) {
+	redirectAdmin := func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusFound)
-	})
+	}
+	r.Get("/admin", redirectAdmin)
+	r.Head("/admin", redirectAdmin)
 
 	r.Post("/admin/api/login", h.handleLogin)
 
@@ -89,6 +91,7 @@ func (h *Handler) Mount(r chi.Router) {
 	})
 
 	r.Get("/admin/*", h.handleUI)
+	r.Head("/admin/*", h.handleUI)
 }
 
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {

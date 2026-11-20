@@ -21,6 +21,7 @@ import (
 	"github.com/AL1X0/mergerfin/internal/auth"
 	"github.com/AL1X0/mergerfin/internal/config"
 	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
@@ -464,5 +465,444 @@ func TestSessionLogoutCapabilitiesAndWebStatic(t *testing.T) {
 	webRouter.ServeHTTP(assetRec, assetReq)
 	if assetRec.Code != http.StatusOK || !strings.Contains(assetRec.Body.String(), "console.log('ok')") {
 		t.Fatalf("GET /web/app.js = %d body=%q", assetRec.Code, assetRec.Body.String())
+	}
+}
+
+func TestCaseInsensitiveRoutingAndStaticPreservation(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Lowercase GET /users/public (exact case jellyfin-web sends)
+	pubReq := httptest.NewRequest(http.MethodGet, "/users/public", nil)
+	pubRec := httptest.NewRecorder()
+	env.router.ServeHTTP(pubRec, pubReq)
+	if pubRec.Code != http.StatusOK {
+		t.Fatalf("GET /users/public status = %d, body = %s", pubRec.Code, pubRec.Body.String())
+	}
+
+	// Mixed-case POST /Users/authenticatebyname (live login bug regression)
+	body, _ := json.Marshal(map[string]string{
+		"Username": "admin",
+		"Pw":       "secretpass",
+	})
+	authReq := httptest.NewRequest(http.MethodPost, "/Users/authenticatebyname", bytes.NewReader(body))
+	authReq.Header.Set("Content-Type", "application/json")
+	authReq.Header.Set("Authorization", `MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="dev-ci", Version="10.9.0"`)
+	authRec := httptest.NewRecorder()
+	env.router.ServeHTTP(authRec, authReq)
+	if authRec.Code != http.StatusOK {
+		t.Fatalf("POST /Users/authenticatebyname status = %d, body = %s", authRec.Code, authRec.Body.String())
+	}
+	var authRes api.AuthenticationResult
+	if err := json.Unmarshal(authRec.Body.Bytes(), &authRes); err != nil {
+		t.Fatalf("decode /Users/authenticatebyname: %v", err)
+	}
+
+	// Mixed-case /SYSTEM/Info/Public
+	sysReq := httptest.NewRequest(http.MethodGet, "/SYSTEM/Info/Public", nil)
+	sysRec := httptest.NewRecorder()
+	env.router.ServeHTTP(sysRec, sysReq)
+	if sysRec.Code != http.StatusOK {
+		t.Fatalf("GET /SYSTEM/Info/Public status = %d, body = %s", sysRec.Code, sysRec.Body.String())
+	}
+
+	// HEAD /admin/ and HEAD /admin
+	headAdminSlashReq := httptest.NewRequest(http.MethodHead, "/admin/", nil)
+	headAdminSlashRec := httptest.NewRecorder()
+	env.router.ServeHTTP(headAdminSlashRec, headAdminSlashReq)
+	if headAdminSlashRec.Code != http.StatusOK {
+		t.Fatalf("HEAD /admin/ status = %d, want 200", headAdminSlashRec.Code)
+	}
+
+	headAdminReq := httptest.NewRequest(http.MethodHead, "/admin", nil)
+	headAdminRec := httptest.NewRecorder()
+	env.router.ServeHTTP(headAdminRec, headAdminReq)
+	if headAdminRec.Code != http.StatusFound {
+		t.Fatalf("HEAD /admin status = %d, want 302", headAdminRec.Code)
+	}
+
+	// /hls-proxy/ must preserve casing after "/hls-proxy/"
+	var receivedPath string
+	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/vtt")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("WEBVTT\n\n"))
+	}))
+	defer upSrv.Close()
+
+	pool, err := upstream.NewPool(env.db, "test-secret-key", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	srvID := idgen.NewRandomHex32()
+	encTok, err := pool.EncryptToken("up-tok")
+	if err != nil {
+		t.Fatalf("EncryptToken: %v", err)
+	}
+	ctx := context.Background()
+	if err := env.db.UpsertServer(ctx, db.UpstreamServer{
+		ID:         srvID,
+		Name:       "UpHLS",
+		BaseURL:    upSrv.URL,
+		Username:   "u",
+		AccessToken: encTok,
+		Priority:   10,
+		StreamMode: "proxy",
+		Enabled:    true,
+		IsOnline:   true,
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+	itemID := idgen.VirtualItemID("movie:hls-case")
+	if err := env.db.UpsertItem(ctx, db.VirtualItem{
+		ID:           itemID,
+		LibraryID:    idgen.MoviesLibraryID(),
+		ParentID:     idgen.MoviesLibraryID(),
+		ItemType:     "Movie",
+		CanonicalKey: "movie:hls-case",
+		Name:         "HLS Case Movie",
+	}); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	psID := idgen.NewRandomHex32()
+	if err := env.db.CreatePlaySession(ctx, db.ActivePlaySession{
+		PlaySessionID:       psID,
+		UserID:              authRes.User.Id,
+		DeviceID:            "dev-ci",
+		VirtualItemID:       itemID,
+		SourceID:            idgen.SourceID(srvID, "ms1"),
+		ServerID:            srvID,
+		RemoteItemID:        "rem-1",
+		RemotePlaySessionID: "rem-ps-1",
+		StartedAt:           time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreatePlaySession: %v", err)
+	}
+
+	hlsReq := httptest.NewRequest(http.MethodGet, "/Videos/"+strings.ToUpper(itemID)+"/hls-proxy/Subtitles/KeepCase.vtt?PlaySessionId="+psID, nil)
+	hlsReq.Header.Set("X-Emby-Token", authRes.AccessToken)
+	hlsRec := httptest.NewRecorder()
+	env.router.ServeHTTP(hlsRec, hlsReq)
+	if hlsRec.Code != http.StatusOK {
+		t.Fatalf("GET hls-proxy status = %d, body = %s", hlsRec.Code, hlsRec.Body.String())
+	}
+	if receivedPath != "/Subtitles/KeepCase.vtt" {
+		t.Fatalf("upstream received path = %q, want %q", receivedPath, "/Subtitles/KeepCase.vtt")
+	}
+
+	// /favicon.ico returns 204 when WebDir has no favicon.ico, 200 when present
+	fav204Req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	fav204Rec := httptest.NewRecorder()
+	env.router.ServeHTTP(fav204Rec, fav204Req)
+	if fav204Rec.Code != http.StatusNoContent {
+		t.Fatalf("GET /favicon.ico without file = %d, want 204", fav204Rec.Code)
+	}
+
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "favicon.ico"), []byte("ico-bytes"), 0o644); err != nil {
+		t.Fatalf("write favicon.ico: %v", err)
+	}
+	favRouter := api.NewRouter(api.RouterDeps{
+		Config: &config.Config{Port: "8096", ServerName: "MergerFin", WebDir: webDir},
+		DB:     env.db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	fav200Req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	fav200Rec := httptest.NewRecorder()
+	favRouter.ServeHTTP(fav200Rec, fav200Req)
+	if fav200Rec.Code != http.StatusOK || fav200Rec.Body.String() != "ico-bytes" {
+		t.Fatalf("GET /favicon.ico with file = %d %q", fav200Rec.Code, fav200Rec.Body.String())
+	}
+}
+
+func TestCompatEndpoints(t *testing.T) {
+	env := newTestEnv(t)
+	authRes := authenticateTestUser(t, env.router)
+	ctx := context.Background()
+
+	moviesLib := idgen.MoviesLibraryID()
+	tvLib := idgen.TVShowsLibraryID()
+
+	movieID := idgen.VirtualItemID("movie:compat-1")
+	if err := env.db.UpsertItem(ctx, db.VirtualItem{
+		ID:             movieID,
+		LibraryID:      moviesLib,
+		ParentID:       moviesLib,
+		ItemType:       "Movie",
+		CanonicalKey:   "movie:compat-1",
+		Name:           "Inception",
+		SortName:       "Inception",
+		ProductionYear: 2010,
+		RunTimeTicks:   88800000000,
+		GenresJSON:     `["Action","Sci-Fi"]`,
+	}); err != nil {
+		t.Fatalf("UpsertItem movie: %v", err)
+	}
+
+	seriesID := idgen.VirtualItemID("series:compat-1")
+	if err := env.db.UpsertItem(ctx, db.VirtualItem{
+		ID:           seriesID,
+		LibraryID:    tvLib,
+		ParentID:     tvLib,
+		ItemType:     "Series",
+		CanonicalKey: "series:compat-1",
+		Name:         "Severance",
+		SortName:     "Severance",
+		GenresJSON:   `["Drama","Sci-Fi"]`,
+	}); err != nil {
+		t.Fatalf("UpsertItem series: %v", err)
+	}
+
+	seasonID := idgen.VirtualItemID("season:compat-1:1")
+	if err := env.db.UpsertItem(ctx, db.VirtualItem{
+		ID:           seasonID,
+		LibraryID:    tvLib,
+		ParentID:     seriesID,
+		SeriesID:     seriesID,
+		ItemType:     "Season",
+		CanonicalKey: "season:compat-1:1",
+		Name:         "Season 1",
+		SeriesName:   "Severance",
+		IndexNumber:  1,
+	}); err != nil {
+		t.Fatalf("UpsertItem season: %v", err)
+	}
+
+	epID := idgen.VirtualItemID("ep:compat-1:1:1")
+	if err := env.db.UpsertItem(ctx, db.VirtualItem{
+		ID:                epID,
+		LibraryID:         tvLib,
+		ParentID:          seasonID,
+		SeriesID:          seriesID,
+		SeasonID:          seasonID,
+		ItemType:          "Episode",
+		CanonicalKey:      "ep:compat-1:1:1",
+		Name:              "Good News About Hell",
+		SeriesName:        "Severance",
+		SeasonName:        "Season 1",
+		IndexNumber:       1,
+		ParentIndexNumber: 1,
+		RunTimeTicks:      33000000000,
+	}); err != nil {
+		t.Fatalf("UpsertItem episode: %v", err)
+	}
+
+	if err := env.db.UpsertProgress(ctx, authRes.User.Id, movieID, 123456789, false, "2026-11-20T10:00:00Z"); err != nil {
+		t.Fatalf("UpsertProgress: %v", err)
+	}
+
+	doAuthed := func(method, target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, nil)
+		req.Header.Set("X-Emby-Token", authRes.AccessToken)
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// GET /useritems/resume
+	resRec := doAuthed(http.MethodGet, "/useritems/resume")
+	if resRec.Code != http.StatusOK {
+		t.Fatalf("GET /useritems/resume = %d body=%s", resRec.Code, resRec.Body.String())
+	}
+	var resumeQR api.QueryResult
+	if err := json.Unmarshal(resRec.Body.Bytes(), &resumeQR); err != nil {
+		t.Fatalf("decode /useritems/resume: %v", err)
+	}
+	if resumeQR.TotalRecordCount != 1 || len(resumeQR.Items) != 1 || resumeQR.Items[0].Id != movieID {
+		t.Fatalf("unexpected /useritems/resume: %+v", resumeQR)
+	}
+
+	// GET /useritems/{id}/userdata and /users/{userId}/items/{id}/userdata
+	udRec := doAuthed(http.MethodGet, "/useritems/"+movieID+"/userdata")
+	if udRec.Code != http.StatusOK {
+		t.Fatalf("GET /useritems/{id}/userdata = %d body=%s", udRec.Code, udRec.Body.String())
+	}
+	var ud api.UserItemDataDto
+	if err := json.Unmarshal(udRec.Body.Bytes(), &ud); err != nil {
+		t.Fatalf("decode userdata: %v", err)
+	}
+	if ud.PlaybackPositionTicks != 123456789 || ud.Key != movieID {
+		t.Fatalf("unexpected userdata: %+v", ud)
+	}
+
+	seriesUDRec := doAuthed(http.MethodGet, "/users/"+authRes.User.Id+"/items/"+seriesID+"/userdata")
+	if seriesUDRec.Code != http.StatusOK {
+		t.Fatalf("GET series userdata = %d", seriesUDRec.Code)
+	}
+	var seriesUD api.UserItemDataDto
+	if err := json.Unmarshal(seriesUDRec.Body.Bytes(), &seriesUD); err != nil {
+		t.Fatalf("decode series userdata: %v", err)
+	}
+	if seriesUD.UnplayedItemCount == nil || *seriesUD.UnplayedItemCount != 1 {
+		t.Fatalf("expected UnplayedItemCount=1 for series, got %+v", seriesUD.UnplayedItemCount)
+	}
+
+	// POST & DELETE /useritems/{id}/rating
+	for _, m := range []string{http.MethodPost, http.MethodDelete} {
+		rateRec := doAuthed(m, "/useritems/"+movieID+"/rating")
+		if rateRec.Code != http.StatusOK {
+			t.Fatalf("%s /useritems/{id}/rating = %d", m, rateRec.Code)
+		}
+	}
+
+	// GET /items/counts
+	cntRec := doAuthed(http.MethodGet, "/items/counts")
+	if cntRec.Code != http.StatusOK {
+		t.Fatalf("GET /items/counts = %d body=%s", cntRec.Code, cntRec.Body.String())
+	}
+	var counts api.ItemCountsDto
+	if err := json.Unmarshal(cntRec.Body.Bytes(), &counts); err != nil {
+		t.Fatalf("decode /items/counts: %v", err)
+	}
+	if counts.MovieCount != 1 || counts.SeriesCount != 1 || counts.EpisodeCount != 1 || counts.ItemCount != 3 {
+		t.Fatalf("unexpected counts: %+v", counts)
+	}
+
+	// GET /items/root
+	rootRec := doAuthed(http.MethodGet, "/items/root")
+	if rootRec.Code != http.StatusOK {
+		t.Fatalf("GET /items/root = %d body=%s", rootRec.Code, rootRec.Body.String())
+	}
+	var rootDTO api.BaseItemDto
+	if err := json.Unmarshal(rootRec.Body.Bytes(), &rootDTO); err != nil {
+		t.Fatalf("decode /items/root: %v", err)
+	}
+	expectedRootID := idgen.DeterministicHex32("library:root")
+	if rootDTO.Id != expectedRootID || rootDTO.Type != "AggregateFolder" || rootDTO.Name != "Media Folders" || !rootDTO.IsFolder || rootDTO.UserData.Key != expectedRootID {
+		t.Fatalf("unexpected /items/root: %+v", rootDTO)
+	}
+
+	// GET /items/{id}/intros & other empty QueryResult endpoints
+	for _, p := range []string{
+		"/items/" + movieID + "/intros",
+		"/users/" + authRes.User.Id + "/items/" + movieID + "/intros",
+		"/items/" + movieID + "/themesongs",
+		"/items/" + movieID + "/themevideos",
+		"/shows/upcoming",
+		"/studios",
+		"/persons",
+	} {
+		rec := doAuthed(http.MethodGet, p)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", p, rec.Code)
+		}
+		var qr api.QueryResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &qr); err != nil || qr.Items == nil || qr.TotalRecordCount != 0 {
+			t.Fatalf("unexpected empty QueryResult on %s: %s (err=%v)", p, rec.Body.String(), err)
+		}
+	}
+
+	// GET /items/{id}/ancestors for Episode -> [Season, Series, Library]
+	ancRec := doAuthed(http.MethodGet, "/items/"+epID+"/ancestors")
+	if ancRec.Code != http.StatusOK {
+		t.Fatalf("GET /items/{id}/ancestors = %d body=%s", ancRec.Code, ancRec.Body.String())
+	}
+	var ancestors []api.BaseItemDto
+	if err := json.Unmarshal(ancRec.Body.Bytes(), &ancestors); err != nil {
+		t.Fatalf("decode ancestors: %v", err)
+	}
+	if len(ancestors) != 3 || ancestors[0].Id != seasonID || ancestors[1].Id != seriesID || ancestors[2].Id != tvLib {
+		t.Fatalf("unexpected ancestors order: %+v", ancestors)
+	}
+
+	// GET /items/{id}/thememedia
+	tmRec := doAuthed(http.MethodGet, "/items/"+movieID+"/thememedia")
+	if tmRec.Code != http.StatusOK {
+		t.Fatalf("GET /items/{id}/thememedia = %d body=%s", tmRec.Code, tmRec.Body.String())
+	}
+	var tm api.ThemeMediaResult
+	if err := json.Unmarshal(tmRec.Body.Bytes(), &tm); err != nil {
+		t.Fatalf("decode thememedia: %v", err)
+	}
+	if tm.ThemeVideosResult.Items == nil || tm.ThemeSongsResult.Items == nil || tm.SoundtrackSongsResult.Items == nil {
+		t.Fatalf("expected non-nil empty slices in ThemeMediaResult: %+v", tm)
+	}
+
+	// GET /genres & /genres/{genreName}
+	genRec := doAuthed(http.MethodGet, "/genres")
+	if genRec.Code != http.StatusOK {
+		t.Fatalf("GET /genres = %d body=%s", genRec.Code, genRec.Body.String())
+	}
+	var genresQR api.QueryResult
+	if err := json.Unmarshal(genRec.Body.Bytes(), &genresQR); err != nil {
+		t.Fatalf("decode /genres: %v", err)
+	}
+	if genresQR.TotalRecordCount != 3 || len(genresQR.Items) != 3 {
+		t.Fatalf("expected 3 genres (Action, Drama, Sci-Fi), got %+v", genresQR)
+	}
+	if genresQR.Items[0].Type != "Genre" || !genresQR.Items[0].IsFolder {
+		t.Fatalf("unexpected genre item DTO: %+v", genresQR.Items[0])
+	}
+
+	gByNameRec := doAuthed(http.MethodGet, "/genres/Sci-Fi")
+	if gByNameRec.Code != http.StatusOK {
+		t.Fatalf("GET /genres/Sci-Fi = %d", gByNameRec.Code)
+	}
+	var gByName api.BaseItemDto
+	if err := json.Unmarshal(gByNameRec.Body.Bytes(), &gByName); err != nil {
+		t.Fatalf("decode /genres/Sci-Fi: %v", err)
+	}
+	if gByName.Name != "Sci-Fi" || gByName.Type != "Genre" {
+		t.Fatalf("unexpected /genres/Sci-Fi: %+v", gByName)
+	}
+
+	// GET /search/hints
+	shRec := doAuthed(http.MethodGet, "/search/hints?SearchTerm=Incept&IncludeItemTypes=Movie")
+	if shRec.Code != http.StatusOK {
+		t.Fatalf("GET /search/hints = %d body=%s", shRec.Code, shRec.Body.String())
+	}
+	var sh api.SearchHintsResult
+	if err := json.Unmarshal(shRec.Body.Bytes(), &sh); err != nil {
+		t.Fatalf("decode /search/hints: %v", err)
+	}
+	if sh.TotalRecordCount != 1 || len(sh.SearchHints) != 1 || sh.SearchHints[0].ItemId != movieID || sh.SearchHints[0].Name != "Inception" || sh.SearchHints[0].MediaType != "Video" {
+		t.Fatalf("unexpected /search/hints: %+v", sh)
+	}
+
+	shEmptyRec := doAuthed(http.MethodGet, "/search/hints?SearchTerm=DoesNotExistXYZ")
+	if shEmptyRec.Code != http.StatusOK || !strings.Contains(shEmptyRec.Body.String(), `"SearchHints":[]`) {
+		t.Fatalf("expected non-nil empty SearchHints array, got %d %s", shEmptyRec.Code, shEmptyRec.Body.String())
+	}
+
+	// Miscellaneous compat endpoints
+	for _, p := range []string{
+		"/items/" + movieID + "/localtrailers",
+		"/items/" + movieID + "/specialfeatures",
+		"/userviews/groupingoptions",
+		"/syncplay/list",
+	} {
+		rec := doAuthed(http.MethodGet, p)
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+			t.Fatalf("GET %s = %d %q, want 200 []", p, rec.Code, rec.Body.String())
+		}
+	}
+
+	for _, p := range []string{
+		"/users/configuration",
+		"/users/" + authRes.User.Id + "/configuration",
+		"/sessions/playing/ping",
+		"/sessions/viewing",
+		"/syncplay/pause",
+	} {
+		rec := doAuthed(http.MethodPost, p)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("POST %s = %d, want 204", p, rec.Code)
+		}
+	}
+
+	ltRec := doAuthed(http.MethodGet, "/livetv/info")
+	if ltRec.Code != http.StatusOK {
+		t.Fatalf("GET /livetv/info = %d", ltRec.Code)
+	}
+	var lt api.LiveTVInfoDto
+	if err := json.Unmarshal(ltRec.Body.Bytes(), &lt); err != nil || lt.IsEnabled || lt.Services == nil || lt.EnabledUsers == nil {
+		t.Fatalf("unexpected /livetv/info: %+v err=%v", lt, err)
+	}
+
+	for _, p := range []string{"/shows/tvrecommended", "/shows/" + seriesID + "/similar"} {
+		rec := doAuthed(http.MethodGet, p)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d body=%s", p, rec.Code, rec.Body.String())
+		}
 	}
 }

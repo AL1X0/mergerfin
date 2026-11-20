@@ -205,6 +205,14 @@ func (s *Streamer) fetchAndServePlaylist(ctx context.Context, w http.ResponseWri
 		return
 	}
 
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(ct, "mpegurl") && !strings.HasSuffix(strings.ToLower(upURL.Path), ".m3u8") {
+		copyStreamHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		streamZeroCopy(ctx, w, resp.Body, s.logger)
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPlaylistBytes))
 	if err != nil {
 		http.Error(w, "failed to read upstream playlist", http.StatusBadGateway)

@@ -198,6 +198,35 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 		}
 	}
 
+	seriesMap := make(map[string]db.VirtualItem)
+	for _, it := range items {
+		if it.ItemType == "Series" {
+			seriesMap[ensureHex32(it.ID)] = it
+		}
+	}
+	if database != nil {
+		missingSet := make(map[string]struct{})
+		var missingIDs []string
+		for _, it := range items {
+			if (it.ItemType == "Season" || it.ItemType == "Episode") && it.SeriesID != "" {
+				sid := ensureHex32(it.SeriesID)
+				if _, ok := seriesMap[sid]; !ok {
+					if _, seen := missingSet[sid]; !seen {
+						missingSet[sid] = struct{}{}
+						missingIDs = append(missingIDs, sid)
+					}
+				}
+			}
+		}
+		if len(missingIDs) > 0 {
+			if parentSeries, _, err := database.QueryItems(ctx, db.ItemFilter{IDs: missingIDs}); err == nil {
+				for _, s := range parentSeries {
+					seriesMap[ensureHex32(s.ID)] = s
+				}
+			}
+		}
+	}
+
 	normServerID := ensureHex32(serverID)
 
 	for _, it := range items {
@@ -273,37 +302,55 @@ func buildItemDTOs(ctx context.Context, database *db.DB, serverID, userID string
 			parentIdxNum = &v
 		}
 
+		var seriesPrimaryImageTag string
+		var parentBackdropItemID string
+		var parentBackdropImageTags []string
+		if (it.ItemType == "Season" || it.ItemType == "Episode") && it.SeriesID != "" {
+			if series, ok := seriesMap[ensureHex32(it.SeriesID)]; ok {
+				if series.ImgPrimaryServerID != "" && series.ImgPrimaryRemoteID != "" {
+					seriesPrimaryImageTag = idgen.DeterministicHex32("img:primary:" + series.ImgPrimaryServerID + ":" + series.ImgPrimaryRemoteID)
+				}
+				if series.ImgBackdropServerID != "" && series.ImgBackdropRemoteID != "" {
+					parentBackdropItemID = ensureHex32(series.ID)
+					parentBackdropImageTags = []string{idgen.DeterministicHex32("img:backdrop:" + series.ImgBackdropServerID + ":" + series.ImgBackdropRemoteID)}
+				}
+			}
+		}
+
 		dto := BaseItemDto{
-			Name:              it.Name,
-			OriginalTitle:     it.OriginalTitle,
-			ServerId:          normServerID,
-			Id:                itemID,
-			Etag:              itemID,
-			DateCreated:       it.DateCreated,
-			CanDelete:         false,
-			CanDownload:       !isFolder,
-			SortName:          it.SortName,
-			PremiereDate:      it.PremiereDate,
-			ExternalUrls:      []any{},
-			Overview:          it.Overview,
-			Taglines:          taglines,
-			Genres:            genres,
-			GenreItems:        genreItems,
-			Studios:           studios,
-			People:            people,
-			ProductionYear:    it.ProductionYear,
-			OfficialRating:    it.OfficialRating,
-			CommunityRating:   it.CommunityRating,
-			RunTimeTicks:      it.RunTimeTicks,
-			PlayAccess:        "Full",
-			IndexNumber:       idxNum,
-			ParentIndexNumber: parentIdxNum,
-			ParentId:          parentID,
-			SeriesId:          ensureHex32(it.SeriesID),
-			SeriesName:        it.SeriesName,
-			SeasonId:          ensureHex32(it.SeasonID),
-			SeasonName:        it.SeasonName,
-			IsFolder:          isFolder,
+			Name:                    it.Name,
+			OriginalTitle:           it.OriginalTitle,
+			ServerId:                normServerID,
+			Id:                      itemID,
+			Etag:                    itemID,
+			DateCreated:             it.DateCreated,
+			CanDelete:               false,
+			CanDownload:             !isFolder,
+			SortName:                it.SortName,
+			PremiereDate:            it.PremiereDate,
+			ExternalUrls:            []any{},
+			Overview:                it.Overview,
+			Taglines:                taglines,
+			Genres:                  genres,
+			GenreItems:              genreItems,
+			Studios:                 studios,
+			People:                  people,
+			ProductionYear:          it.ProductionYear,
+			OfficialRating:          it.OfficialRating,
+			CommunityRating:         it.CommunityRating,
+			RunTimeTicks:            it.RunTimeTicks,
+			PlayAccess:              "Full",
+			IndexNumber:             idxNum,
+			ParentIndexNumber:       parentIdxNum,
+			ParentId:                parentID,
+			SeriesId:                ensureHex32(it.SeriesID),
+			SeriesName:              it.SeriesName,
+			SeasonId:                ensureHex32(it.SeasonID),
+			SeasonName:              it.SeasonName,
+			SeriesPrimaryImageTag:   seriesPrimaryImageTag,
+			ParentBackdropItemId:    parentBackdropItemID,
+			ParentBackdropImageTags: parentBackdropImageTags,
+			IsFolder:                isFolder,
 			Type:              it.ItemType,
 			MediaType:         mediaType,
 			LocationType:      "FileSystem",

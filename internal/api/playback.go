@@ -248,16 +248,25 @@ func (h *apiHandler) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) 
 		)
 
 		if mapBool(cand.ms, "SupportsTranscoding") && upstreamTranscodingURL != "" {
-			cand.ms["TranscodingUrl"] = fmt.Sprintf(
-				"/Videos/%s/master.m3u8?MediaSourceId=%s&PlaySessionId=%s&DeviceId=%s&api_key=%s",
-				itemID, cand.src.SourceID, proxyPlaySessionID, url.QueryEscape(deviceID), url.QueryEscape(proxyToken),
-			)
-			if mapString(cand.ms, "TranscodingSubProtocol") == "" {
-				cand.ms["TranscodingSubProtocol"] = "hls"
+			subProto := mapString(cand.ms, "TranscodingSubProtocol")
+			if isHLSTranscoding(subProto, upstreamTranscodingURL) {
+				cand.ms["TranscodingUrl"] = fmt.Sprintf(
+					"/Videos/%s/master.m3u8?MediaSourceId=%s&PlaySessionId=%s&DeviceId=%s&api_key=%s",
+					itemID, cand.src.SourceID, proxyPlaySessionID, url.QueryEscape(deviceID), url.QueryEscape(proxyToken),
+				)
+				if subProto == "" {
+					cand.ms["TranscodingSubProtocol"] = "hls"
+				}
+			} else if baseParsed, parseErr := url.Parse(strings.TrimSpace(cand.srv.BaseURL)); parseErr == nil {
+				if proxied, ok := rewriteUpstreamURLToProxy(baseParsed, upstreamTranscodingURL, itemID, proxyPlaySessionID, proxyToken); ok {
+					cand.ms["TranscodingUrl"] = proxied
+				}
 			}
 		} else {
 			delete(cand.ms, "TranscodingUrl")
 		}
+
+		rewriteMediaStreamDeliveryURLs(cand.ms, cand.srv.BaseURL, itemID, proxyPlaySessionID, proxyToken)
 
 		rewritten = append(rewritten, cand.ms)
 	}
@@ -501,6 +510,77 @@ func resolveUpstreamURL(baseURL, raw string) string {
 		return base + trimmed
 	}
 	return base + "/" + trimmed
+}
+
+func isHLSTranscoding(subProto, upstreamURL string) bool {
+	if strings.EqualFold(strings.TrimSpace(subProto), "hls") {
+		return true
+	}
+	if u, err := url.Parse(strings.TrimSpace(upstreamURL)); err == nil {
+		if strings.HasSuffix(strings.ToLower(u.Path), ".m3u8") {
+			return true
+		}
+	}
+	return strings.TrimSpace(subProto) == ""
+}
+
+func rewriteUpstreamURLToProxy(baseParsed *url.URL, rawURL, itemID, proxyPlaySessionID, proxyToken string) (string, bool) {
+	if baseParsed == nil {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", false
+	}
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(lower, "http") {
+		return "", false
+	}
+	ref, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false
+	}
+	resolved := baseParsed.ResolveReference(ref)
+	q := url.Values{}
+	for k, vals := range resolved.Query() {
+		if strings.EqualFold(k, "api_key") || strings.EqualFold(k, "ApiKey") || strings.EqualFold(k, "mf_ps") {
+			continue
+		}
+		for _, v := range vals {
+			q.Add(k, v)
+		}
+	}
+	if proxyPlaySessionID != "" {
+		q.Set("mf_ps", proxyPlaySessionID)
+	}
+	if proxyToken != "" {
+		q.Set("api_key", proxyToken)
+	}
+	return "/Videos/" + itemID + "/hls-proxy/" + strings.TrimLeft(resolved.Path, "/") + "?" + q.Encode(), true
+}
+
+func rewriteMediaStreamDeliveryURLs(ms map[string]any, baseURL, itemID, proxyPlaySessionID, proxyToken string) {
+	rawStreams, ok := ms["MediaStreams"].([]any)
+	if !ok || len(rawStreams) == 0 {
+		return
+	}
+	baseParsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return
+	}
+	for _, rawStream := range rawStreams {
+		stream, ok := rawStream.(map[string]any)
+		if !ok || stream == nil {
+			continue
+		}
+		rawDelivery, ok := stream["DeliveryUrl"].(string)
+		if !ok {
+			continue
+		}
+		if proxied, ok := rewriteUpstreamURLToProxy(baseParsed, rawDelivery, itemID, proxyPlaySessionID, proxyToken); ok {
+			stream["DeliveryUrl"] = proxied
+		}
+	}
 }
 
 func extractPlaySessionIDFromURL(rawURL string) string {

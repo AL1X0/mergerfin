@@ -565,3 +565,290 @@ func TestPlaystateEndpointsAndCrossServerNextUpAndResume(t *testing.T) {
 		t.Fatalf("expected movie played + favorite/unfavorite fan-out to UpB, got %+v", eventsB)
 	}
 }
+
+func TestPlaybackInfoRewritesExternalSubtitleDeliveryURL(t *testing.T) {
+	handler, database, pool, _, proxyToken := setupPlaybackTestRouter(t)
+	ctx := context.Background()
+
+	var upSubURL string
+	upSub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/System/Info/Public":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ServerName": "UpSub", "Version": "12.4.0"})
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"User": map[string]any{"Id": "usub"}, "AccessToken": "secret-upstream-token"})
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/remote-sub/PlaybackInfo":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"PlaySessionId": "remote-ps-sub",
+				"MediaSources": []map[string]any{
+					{
+						"Id":                   "ms-sub",
+						"Container":            "mkv",
+						"SupportsDirectPlay":   true,
+						"SupportsDirectStream": true,
+						"MediaStreams": []map[string]any{
+							{
+								"Index": 0,
+								"Type":  "Video",
+							},
+							{
+								"Index":          2,
+								"Type":           "Subtitle",
+								"IsExternal":     true,
+								"DeliveryMethod": "External",
+								"DeliveryUrl":    "/Videos/remote-sub/ms-sub/Subtitles/2/0/Stream.vtt?ApiKey=secret-upstream-token&format=vtt",
+							},
+							{
+								"Index":          3,
+								"Type":           "Subtitle",
+								"IsExternal":     true,
+								"DeliveryMethod": "External",
+								"DeliveryUrl":    upSubURL + "/Videos/remote-sub/ms-sub/Subtitles/3/0/Stream.srt?api_key=secret-upstream-token",
+							},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	upSubURL = upSub.URL
+	defer upSub.Close()
+
+	srv, err := pool.AddOrUpdateServer(ctx, "", "UpSub", upSub.URL, "admin", "pass", 10, "proxy", true)
+	if err != nil {
+		t.Fatalf("add srv: %v", err)
+	}
+
+	itemID := idgen.VirtualItemID("movie:tmdb:sub-test")
+	if err := database.UpsertItem(ctx, db.VirtualItem{
+		ID: itemID, LibraryID: idgen.MoviesLibraryID(), ParentID: idgen.MoviesLibraryID(),
+		ItemType: "Movie", CanonicalKey: "movie:tmdb:sub-test", Name: "Sub Test",
+	}); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	if err := database.UpsertSource(ctx, db.ItemSource{
+		SourceID: idgen.SourceID(srv.ID, "ms-sub"), VirtualItemID: itemID, ServerID: srv.ID,
+		RemoteItemID: "remote-sub", RemoteMediaSourceID: "ms-sub", Label: "[UpSub] 1080p",
+		Container: "mkv",
+	}); err != nil {
+		t.Fatalf("UpsertSource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/Items/"+itemID+"/PlaybackInfo", bytes.NewBufferString(`{"DeviceId":"web-sub"}`))
+	req.Header.Set("X-Emby-Token", proxyToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PlaybackInfo status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		PlaySessionId string           `json:"PlaySessionId"`
+		MediaSources  []map[string]any `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal PlaybackInfo: %v", err)
+	}
+	if len(resp.MediaSources) != 1 {
+		t.Fatalf("expected 1 MediaSource, got %d", len(resp.MediaSources))
+	}
+
+	streams, ok := resp.MediaSources[0]["MediaStreams"].([]any)
+	if !ok || len(streams) != 3 {
+		t.Fatalf("expected 3 MediaStreams, got %#v", resp.MediaSources[0]["MediaStreams"])
+	}
+
+	sub2 := streams[1].(map[string]any)
+	d2, _ := sub2["DeliveryUrl"].(string)
+	wantPrefix2 := "/Videos/" + itemID + "/hls-proxy/Videos/remote-sub/ms-sub/Subtitles/2/0/Stream.vtt?"
+	if !strings.HasPrefix(d2, wantPrefix2) {
+		t.Fatalf("sub2 DeliveryUrl = %q, want prefix %q", d2, wantPrefix2)
+	}
+	if strings.Contains(d2, "secret-upstream-token") {
+		t.Fatalf("sub2 DeliveryUrl leaked upstream token: %q", d2)
+	}
+	u2, err := url.Parse(d2)
+	if err != nil {
+		t.Fatalf("parse sub2 DeliveryUrl: %v", err)
+	}
+	q2 := u2.Query()
+	if q2.Get("api_key") != proxyToken || q2.Get("mf_ps") != resp.PlaySessionId || q2.Get("format") != "vtt" || q2.Get("ApiKey") != "" {
+		t.Fatalf("unexpected sub2 query params: %v", q2)
+	}
+
+	sub3 := streams[2].(map[string]any)
+	d3, _ := sub3["DeliveryUrl"].(string)
+	wantPrefix3 := "/Videos/" + itemID + "/hls-proxy/Videos/remote-sub/ms-sub/Subtitles/3/0/Stream.srt?"
+	if !strings.HasPrefix(d3, wantPrefix3) {
+		t.Fatalf("sub3 DeliveryUrl = %q, want prefix %q", d3, wantPrefix3)
+	}
+	if strings.Contains(d3, "secret-upstream-token") {
+		t.Fatalf("sub3 DeliveryUrl leaked upstream token: %q", d3)
+	}
+	u3, err := url.Parse(d3)
+	if err != nil {
+		t.Fatalf("parse sub3 DeliveryUrl: %v", err)
+	}
+	q3 := u3.Query()
+	if q3.Get("api_key") != proxyToken || q3.Get("mf_ps") != resp.PlaySessionId {
+		t.Fatalf("unexpected sub3 query params: %v", q3)
+	}
+}
+
+func TestImageCanonicalizationAndSeriesFallbackAndDTOArtwork(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:", "ImgTest")
+	if err != nil {
+		t.Fatalf("db.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	pool, err := upstream.NewPool(database, "test-secret", slog.Default())
+	if err != nil {
+		t.Fatalf("NewPool failed: %v", err)
+	}
+
+	var fetchedPaths []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/System/Info/Public":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ServerName": "Up", "Version": "12.4.0"})
+		case r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"User": map[string]any{"Id": "u1"}, "AccessToken": "t1"})
+		case strings.HasPrefix(r.URL.Path, "/Items/"):
+			mu.Lock()
+			fetchedPaths = append(fetchedPaths, r.URL.Path)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer up.Close()
+
+	srv, err := pool.AddOrUpdateServer(ctx, "", "Up", up.URL, "a", "p", 10, "proxy", true)
+	if err != nil {
+		t.Fatalf("add srv: %v", err)
+	}
+
+	seriesID := idgen.VirtualItemID("series:tmdb:100")
+	seasonID := idgen.VirtualItemID("season:series:tmdb:100:s1")
+	epID := idgen.VirtualItemID("episode:series:tmdb:100:s1:e1")
+
+	_ = database.UpsertItem(ctx, db.VirtualItem{
+		ID: seriesID, LibraryID: idgen.TVShowsLibraryID(), ParentID: idgen.TVShowsLibraryID(),
+		ItemType: "Series", CanonicalKey: "series:tmdb:100", Name: "Show",
+		ImgPrimaryServerID: srv.ID, ImgPrimaryRemoteID: "rem-series",
+		ImgBackdropServerID: srv.ID, ImgBackdropRemoteID: "rem-series-bd",
+	})
+	_ = database.UpsertItem(ctx, db.VirtualItem{
+		ID: seasonID, LibraryID: idgen.TVShowsLibraryID(), ParentID: seriesID, SeriesID: seriesID,
+		ItemType: "Season", CanonicalKey: "season:series:tmdb:100:s1", Name: "Season 1", IndexNumber: 1,
+	})
+	_ = database.UpsertItem(ctx, db.VirtualItem{
+		ID: epID, LibraryID: idgen.TVShowsLibraryID(), ParentID: seasonID, SeriesID: seriesID, SeasonID: seasonID,
+		ItemType: "Episode", CanonicalKey: "episode:series:tmdb:100:s1:e1", Name: "Ep 1", ParentIndexNumber: 1, IndexNumber: 1,
+	})
+
+	// 1. Verify DTO parent artwork fields on Season and Episode.
+	dtos, err := buildItemDTOs(ctx, database, "server-1", "", []db.VirtualItem{
+		{ID: seasonID, SeriesID: seriesID, ItemType: "Season", Name: "Season 1"},
+		{ID: epID, SeriesID: seriesID, SeasonID: seasonID, ItemType: "Episode", Name: "Ep 1"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildItemDTOs failed: %v", err)
+	}
+	wantPrimaryTag := idgen.DeterministicHex32("img:primary:" + srv.ID + ":rem-series")
+	wantBackdropTag := idgen.DeterministicHex32("img:backdrop:" + srv.ID + ":rem-series-bd")
+	for _, dto := range dtos {
+		if dto.SeriesPrimaryImageTag != wantPrimaryTag {
+			t.Fatalf("%s SeriesPrimaryImageTag = %q, want %q", dto.Type, dto.SeriesPrimaryImageTag, wantPrimaryTag)
+		}
+		if dto.ParentBackdropItemId != seriesID {
+			t.Fatalf("%s ParentBackdropItemId = %q, want %q", dto.Type, dto.ParentBackdropItemId, seriesID)
+		}
+		if len(dto.ParentBackdropImageTags) != 1 || dto.ParentBackdropImageTags[0] != wantBackdropTag {
+			t.Fatalf("%s ParentBackdropImageTags = %v, want [%q]", dto.Type, dto.ParentBackdropImageTags, wantBackdropTag)
+		}
+	}
+
+	// 2. Verify lowercase imageType canonicalization and Season/Episode fallback to parent Series.
+	cfg := &config.Config{Port: "8096", ServerName: "ImgTest", DataDir: t.TempDir()}
+	h := newAPIHandler(cfg, database, pool, upstream.NewClient(), slog.Default())
+	r := chi.NewRouter()
+	r.Get("/Items/{itemId}/Images/{imageType}", h.handleGetItemImage)
+
+	for _, tc := range []struct {
+		url      string
+		wantPath string
+	}{
+		{"/Items/" + seasonID + "/Images/primary", "/Items/rem-series/Images/Primary"},
+		{"/Items/" + epID + "/Images/backdrop", "/Items/rem-series-bd/Images/Backdrop"},
+		{"/Items/" + seasonID + "/Images/logo", "/Items/rem-series/Images/Logo"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", tc.url, rec.Code, rec.Body.String())
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantPaths := []string{
+		"/Items/rem-series/Images/Primary",
+		"/Items/rem-series-bd/Images/Backdrop",
+		"/Items/rem-series/Images/Logo",
+	}
+	if len(fetchedPaths) != len(wantPaths) {
+		t.Fatalf("fetchedPaths = %v, want %v", fetchedPaths, wantPaths)
+	}
+	for i, want := range wantPaths {
+		if fetchedPaths[i] != want {
+			t.Fatalf("fetchedPaths[%d] = %q, want %q", i, fetchedPaths[i], want)
+		}
+	}
+}
+
+func TestPlaybackInfoProgressiveHTTPTranscodeRewriting(t *testing.T) {
+	t.Parallel()
+
+	itemID := idgen.DeterministicHex32("movie:tmdb:888001")
+	sourceID := idgen.DeterministicHex32("source:prog:rem-ms-prog")
+
+	base, err := url.Parse("http://upstream-prog.local:8096")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	rawTransURL := "/videos/remote-1/stream.mkv?MediaSourceId=rem-ms-prog&PlaySessionId=rem-ps-1&ApiKey=secret-upstream-token&VideoCodec=h264"
+	if isHLSTranscoding("http", rawTransURL) {
+		t.Fatal("expected progressive http transcoding not to be classified as HLS")
+	}
+	if !isHLSTranscoding("hls", "/videos/remote-1/master.m3u8?PlaySessionId=rem-ps-1") {
+		t.Fatal("expected explicit hls protocol to be classified as HLS")
+	}
+	if !isHLSTranscoding("", "/videos/remote-1/master.m3u8?PlaySessionId=rem-ps-1") {
+		t.Fatal("expected .m3u8 URL without protocol to be classified as HLS")
+	}
+
+	proxied, ok := rewriteUpstreamURLToProxy(base, rawTransURL, itemID, "proxy-ps-1", "proxy-tok-1")
+	if !ok {
+		t.Fatal("rewriteUpstreamURLToProxy returned false")
+	}
+	if !strings.HasPrefix(proxied, "/Videos/"+itemID+"/hls-proxy/videos/remote-1/stream.mkv?") {
+		t.Fatalf("unexpected proxied URL: %s", proxied)
+	}
+	if strings.Contains(proxied, "secret-upstream-token") || strings.Contains(proxied, "ApiKey=") {
+		t.Fatalf("upstream token leaked in proxied URL: %s", proxied)
+	}
+	if !strings.Contains(proxied, "api_key=proxy-tok-1") || !strings.Contains(proxied, "mf_ps=proxy-ps-1") {
+		t.Fatalf("missing proxy token/session in proxied URL: %s", proxied)
+	}
+	_ = sourceID
+}

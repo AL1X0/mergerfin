@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/AL1X0/mergerfin/internal/db"
 	"github.com/AL1X0/mergerfin/internal/idgen"
 	"github.com/AL1X0/mergerfin/internal/upstream"
 )
@@ -54,6 +56,30 @@ func writeFileAtomic(dst string, data []byte) error {
 	return nil
 }
 
+func canonicalImageType(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	switch strings.ToLower(trimmed) {
+	case "", "primary":
+		return "Primary"
+	case "backdrop":
+		return "Backdrop"
+	case "logo":
+		return "Logo"
+	case "thumb":
+		return "Thumb"
+	case "banner":
+		return "Banner"
+	case "art":
+		return "Art"
+	case "disc":
+		return "Disc"
+	default:
+		runes := []rune(strings.ToLower(trimmed))
+		runes[0] = unicode.ToUpper(runes[0])
+		return string(runes)
+	}
+}
+
 func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -63,10 +89,7 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	imageType := strings.TrimSpace(chi.URLParam(r, "imageType"))
-	if imageType == "" {
-		imageType = "Primary"
-	}
+	imageType := canonicalImageType(chi.URLParam(r, "imageType"))
 	imageIndex := strings.TrimSpace(chi.URLParam(r, "imageIndex"))
 	if imageIndex == "" {
 		imageIndex = "0"
@@ -83,18 +106,43 @@ func (h *apiHandler) handleGetItemImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	serverID := item.ImgPrimaryServerID
-	remoteID := item.ImgPrimaryRemoteID
+	var serverID, remoteID string
 	upstreamType := imageType
+	isSeasonOrEpisode := item.ItemType == "Season" || item.ItemType == "Episode"
 
-	if strings.EqualFold(imageType, "Backdrop") {
+	if imageType == "Backdrop" {
 		if item.ImgBackdropServerID != "" && item.ImgBackdropRemoteID != "" {
 			serverID = item.ImgBackdropServerID
 			remoteID = item.ImgBackdropRemoteID
-		} else if item.ImgPrimaryServerID != "" && item.ImgPrimaryRemoteID != "" {
-			serverID = item.ImgPrimaryServerID
-			remoteID = item.ImgPrimaryRemoteID
-			upstreamType = "Primary"
+		} else {
+			var series *db.VirtualItem
+			if isSeasonOrEpisode && item.SeriesID != "" {
+				series, _ = h.db.GetItemByID(ctx, item.SeriesID)
+			}
+			switch {
+			case series != nil && series.ImgBackdropServerID != "" && series.ImgBackdropRemoteID != "":
+				serverID = series.ImgBackdropServerID
+				remoteID = series.ImgBackdropRemoteID
+			case item.ImgPrimaryServerID != "" && item.ImgPrimaryRemoteID != "":
+				serverID = item.ImgPrimaryServerID
+				remoteID = item.ImgPrimaryRemoteID
+				upstreamType = "Primary"
+			case series != nil && series.ImgPrimaryServerID != "" && series.ImgPrimaryRemoteID != "":
+				serverID = series.ImgPrimaryServerID
+				remoteID = series.ImgPrimaryRemoteID
+				upstreamType = "Primary"
+			}
+		}
+	} else {
+		serverID = item.ImgPrimaryServerID
+		remoteID = item.ImgPrimaryRemoteID
+		if (serverID == "" || remoteID == "") && isSeasonOrEpisode && item.SeriesID != "" {
+			if series, sErr := h.db.GetItemByID(ctx, item.SeriesID); sErr == nil && series != nil {
+				if series.ImgPrimaryServerID != "" && series.ImgPrimaryRemoteID != "" {
+					serverID = series.ImgPrimaryServerID
+					remoteID = series.ImgPrimaryRemoteID
+				}
+			}
 		}
 	}
 

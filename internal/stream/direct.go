@@ -41,7 +41,7 @@ func NewStreamer(database *db.DB, pool *upstream.Pool, logger *slog.Logger) *Str
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ResponseHeaderTimeout: 15 * time.Second,
+		ResponseHeaderTimeout: 45 * time.Second,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 	}
