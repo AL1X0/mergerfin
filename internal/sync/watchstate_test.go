@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 func setupWatchStateTestEnv(t *testing.T) (*WatchStateManager, *db.DB, *upstream.Pool, *spyBroadcaster, string, string, string, string, *[]string, *[]string, *sync.Mutex) {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/tsrz/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/db"
 )
 
 type contextKey struct{}

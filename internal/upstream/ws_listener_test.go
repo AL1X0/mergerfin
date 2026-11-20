@@ -13,8 +13,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 )
 
 type mockDeltaSyncer struct {

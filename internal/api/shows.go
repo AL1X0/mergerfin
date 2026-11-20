@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/tsrz/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/db"
 )
 
 func (h *apiHandler) handleGetSeasons(w http.ResponseWriter, r *http.Request) {

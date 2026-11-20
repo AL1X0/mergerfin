@@ -1,6 +1,6 @@
 services:
   mergerfin:
-    image: ghcr.io/tsrz/mergerfin:latest
+    image: ghcr.io/al1x0/mergerfin:latest
     container_name: mergerfin
     restart: unless-stopped
     ports:

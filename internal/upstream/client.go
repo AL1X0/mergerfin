@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tsrz/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/db"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tsrz/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 	_ "modernc.org/sqlite"
 )
 

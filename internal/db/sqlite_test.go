@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tsrz/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 )
 
 func openTestDB(t *testing.T) (*DB, string) {

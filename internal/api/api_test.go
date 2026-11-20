@@ -16,12 +16,12 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/tsrz/mergerfin/internal/admin"
-	"github.com/tsrz/mergerfin/internal/api"
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/config"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/admin"
+	"github.com/AL1X0/mergerfin/internal/api"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/config"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 type testEnv struct {

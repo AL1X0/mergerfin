@@ -10,13 +10,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/tsrz/mergerfin/internal/admin"
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/config"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/stream"
-	syncengine "github.com/tsrz/mergerfin/internal/sync"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/admin"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/config"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/stream"
+	syncengine "github.com/AL1X0/mergerfin/internal/sync"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 // RouterDeps holds all dependencies required to build the HTTP router.

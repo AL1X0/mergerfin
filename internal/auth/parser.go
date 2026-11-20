@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 	"golang.org/x/crypto/bcrypt"
 )
 

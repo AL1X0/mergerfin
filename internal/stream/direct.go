@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 const streamCopyBufferBytes = 64 * 1024

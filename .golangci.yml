@@ -24,4 +24,4 @@ linters:
         - os.Remove
         - os.RemoveAll
         - (*github.com/coder/websocket.Conn).CloseNow
-        - (*github.com/tsrz/mergerfin/internal/db.DB).Close
+        - (*github.com/AL1X0/mergerfin/internal/db.DB).Close

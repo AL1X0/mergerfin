@@ -1,7 +1,7 @@
 # MergerFin
 
-[![CI](https://github.com/tsrz/mergerfin/actions/workflows/ci.yml/badge.svg)](https://github.com/tsrz/mergerfin/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/badge/ghcr.io-tsrz%2Fmergerfin-00a4dc?logo=docker&logoColor=white)](https://ghcr.io/tsrz/mergerfin)
+[![CI](https://github.com/AL1X0/mergerfin/actions/workflows/ci.yml/badge.svg)](https://github.com/AL1X0/mergerfin/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/badge/ghcr.io-al1x0%2Fmergerfin-00a4dc?logo=docker&logoColor=white)](https://ghcr.io/al1x0/mergerfin)
 [![Go Version](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
@@ -82,7 +82,7 @@ Each upstream server can be configured independently in `/admin`:
 ```yaml
 services:
   mergerfin:
-    image: ghcr.io/tsrz/mergerfin:latest
+    image: ghcr.io/al1x0/mergerfin:latest
     container_name: mergerfin
     restart: unless-stopped
     ports:

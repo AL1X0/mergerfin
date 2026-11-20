@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tsrz/mergerfin/internal/admin"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/admin"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 // Broadcaster pushes real-time notifications (e.g. LibraryChanged) to connected WebSocket clients.

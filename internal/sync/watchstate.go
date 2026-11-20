@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 const (

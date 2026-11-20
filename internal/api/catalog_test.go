@@ -11,12 +11,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/tsrz/mergerfin/internal/admin"
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/config"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/admin"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/config"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 func insertHyphenatedUUID(hex32 string) string {

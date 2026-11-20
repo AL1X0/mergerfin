@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tsrz/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/idgen"
 )
 
 // Domain structs persisted in SQLite.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tsrz/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/db"
 )
 
 func openTestDB(t *testing.T) *db.DB {

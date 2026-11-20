@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/config"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	syncengine "github.com/tsrz/mergerfin/internal/sync"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/config"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	syncengine "github.com/AL1X0/mergerfin/internal/sync"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 func setupPlaybackTestRouter(t *testing.T) (http.Handler, *db.DB, *upstream.Pool, string, string) {

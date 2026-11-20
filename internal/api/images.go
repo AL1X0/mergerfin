@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 func (h *apiHandler) imageCacheDir() string {

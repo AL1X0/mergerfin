@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/tsrz/mergerfin/internal/upstream"
+	"github.com/AL1X0/mergerfin/internal/upstream"
 )
 
 func TestNormalizeAndFormatProviderIDs(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/tsrz/mergerfin
+module github.com/AL1X0/mergerfin
 
 go 1.27.4
 

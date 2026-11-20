@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/tsrz/mergerfin/internal/auth"
-	"github.com/tsrz/mergerfin/internal/db"
-	"github.com/tsrz/mergerfin/internal/idgen"
-	syncengine "github.com/tsrz/mergerfin/internal/sync"
+	"github.com/AL1X0/mergerfin/internal/auth"
+	"github.com/AL1X0/mergerfin/internal/db"
+	"github.com/AL1X0/mergerfin/internal/idgen"
+	syncengine "github.com/AL1X0/mergerfin/internal/sync"
 	"golang.org/x/sync/errgroup"
 )
 
