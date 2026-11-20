@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.5.0",
+        "changelog": "Fix infinite playback echo loop between meshed MergerFin servers (ignore API-key / User-null / mf-* sessions), only report live playback to the single remote server actually streaming the file, include PlaySessionId, and add 15s deduplication cooldown on UserData sync.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.5/mergerfin_0.1.5.0.zip",
+        "checksum": "b41d3499b8e3ba44ced982956390d09e",
+        "timestamp": "2026-11-20T23:50:00Z"
+      },
+      {
         "version": "0.1.4.0",
         "changelog": "Full API Key mode: removed username/password auth and manual per-user account linking. Remote servers connect with a single Jellyfin API Key and watch-state sync automatically matches remote users by username via GET /Users.",
         "targetAbi": "12.4.0.0",
