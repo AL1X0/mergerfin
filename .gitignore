@@ -31,3 +31,8 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+
+# Jellyfin C# plugin build outputs
+plugin/dist/
+plugin/bin/
+plugin/obj/

@@ -1,0 +1,16 @@
+{
+  "category": "General",
+  "guid": "7f3b9c42-6a1e-4b8d-9e2a-5c1f8a3d7b01",
+  "name": "MergerFin",
+  "description": "Federates remote Jellyfin servers into your local Jellyfin libraries with multi-version deduplication, per-user upstream account mapping, and watch-state sync.",
+  "overview": "Unify multiple remote Jellyfin servers directly inside your existing Jellyfin server.",
+  "owner": "AL1X0",
+  "targetAbi": "12.4.0.0",
+  "timestamp": "2026-11-20T22:45:00Z",
+  "version": "0.1.0.0",
+  "status": "Active",
+  "autoUpdate": false,
+  "assemblies": [
+    "Jellyfin.Plugin.MergerFin.dll"
+  ]
+}
