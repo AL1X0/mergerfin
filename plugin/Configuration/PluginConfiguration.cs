@@ -40,6 +40,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Inject remote MediaSources onto matching local movies and episodes via IMediaSourceProvider.
     /// </summary>
     public bool EnableMultiVersionInjection { get; set; } = true;
+
+    /// <summary>
+    /// When true, do not create .strm files for movies/episodes already present locally (they are injected as extra versions instead).
+    /// Set to false if you use a dedicated separate library (e.g. "Films SYNC") and want all remote items listed there.
+    /// </summary>
+    public bool SkipLocalDuplicatesInStrm { get; set; } = true;
 }
 
 public class RemoteServerConfig

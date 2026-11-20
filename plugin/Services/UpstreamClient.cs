@@ -225,7 +225,7 @@ public class UpstreamClient
             var path = string.IsNullOrWhiteSpace(srv.RemoteUserId)
                 ? $"{baseUrl}/Items"
                 : $"{baseUrl}/Users/{Uri.EscapeDataString(srv.RemoteUserId)}/Items";
-            var url = $"{path}?Recursive=true&IncludeItemTypes={typesParam}&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
+            var url = $"{path}?Recursive=true&IncludeItemTypes={typesParam}&CollapseBoxSetItems=false&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(srv.AccessToken));

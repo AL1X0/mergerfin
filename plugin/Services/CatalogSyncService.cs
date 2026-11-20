@@ -253,7 +253,7 @@ public class CatalogSyncService
         var localBase = (cfg.LocalBaseUrl ?? "http://127.0.0.1:8096").Trim().TrimEnd('/');
 
         // Collect all local (non-STRM) item keys so we NEVER create a .strm duplicate for a movie/episode already on disk.
-        var localKeys = CollectLocalNonStrmKeys(root);
+        var localKeys = cfg.SkipLocalDuplicatesInStrm ? CollectLocalNonStrmKeys(root) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var writtenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var handledCanonicalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
