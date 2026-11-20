@@ -88,17 +88,17 @@ public class MergerFinController : ControllerBase
 
     [HttpGet("Status")]
     [Authorize(Policy = "RequiresElevation")]
-    public ActionResult GetStatus()
+    public ActionResult<PluginStatusResponse> GetStatus()
     {
         var (total, movies, episodes, lastSyncUtc, lastError) = _store.GetStats();
-        return Ok(new
+        return Ok(new PluginStatusResponse
         {
-            running = _syncService.IsRunning,
-            totalSources = total,
-            movies,
-            episodes,
-            lastSyncUtc = lastSyncUtc == default ? (DateTime?)null : lastSyncUtc,
-            lastError
+            Running = _syncService.IsRunning,
+            TotalSources = total,
+            Movies = movies,
+            Episodes = episodes,
+            LastSyncUtc = lastSyncUtc == default ? null : lastSyncUtc,
+            LastError = lastError
         });
     }
 

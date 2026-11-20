@@ -89,19 +89,47 @@ public class RemoteCatalogSnapshot
 
 public class ProbeResult
 {
+    [JsonPropertyName("online")]
     public bool Online { get; set; }
 
+    [JsonPropertyName("latencyMs")]
     public long LatencyMs { get; set; }
 
+    [JsonPropertyName("serverName")]
     public string ServerName { get; set; } = string.Empty;
 
+    [JsonPropertyName("version")]
     public string Version { get; set; } = string.Empty;
 
+    [JsonPropertyName("remoteUserId")]
     public string RemoteUserId { get; set; } = string.Empty;
 
+    [JsonPropertyName("accessToken")]
     public string AccessToken { get; set; } = string.Empty;
 
+    [JsonPropertyName("error")]
     public string Error { get; set; } = string.Empty;
+}
+
+public class PluginStatusResponse
+{
+    [JsonPropertyName("running")]
+    public bool Running { get; set; }
+
+    [JsonPropertyName("totalSources")]
+    public int TotalSources { get; set; }
+
+    [JsonPropertyName("movies")]
+    public int Movies { get; set; }
+
+    [JsonPropertyName("episodes")]
+    public int Episodes { get; set; }
+
+    [JsonPropertyName("lastSyncUtc")]
+    public DateTime? LastSyncUtc { get; set; }
+
+    [JsonPropertyName("lastError")]
+    public string LastError { get; set; } = string.Empty;
 }
 
 public class UpstreamSessionIdentity

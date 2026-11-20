@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.2.0",
+        "changelog": "Fix false 'Authentication failed' error caused by Jellyfin's PascalCase JSON serializer mismatching camelCase properties in configPage.html.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.2/mergerfin_0.1.2.0.zip",
+        "checksum": "7d9f6a11c86d5563c6e63f513ca80193",
+        "timestamp": "2026-11-20T23:07:00Z"
+      },
+      {
         "version": "0.1.1.0",
         "changelog": "Fix configPage.html layout (proper Jellyfin .inputContainer/.selectContainer alignment) and replace ES6 template literals so Jellyfin globalize.translateHtml no longer mangles dropdown labels.",
         "targetAbi": "12.4.0.0",
