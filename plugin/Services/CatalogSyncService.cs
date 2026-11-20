@@ -341,9 +341,10 @@ public class CatalogSyncService
                     Directory.CreateDirectory(dir);
                 }
 
-                if (!File.Exists(strmPath) || !string.Equals(File.ReadAllText(strmPath).Trim(), strmUrl, StringComparison.Ordinal))
+                var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+                if (!File.Exists(strmPath) || !string.Equals(File.ReadAllText(strmPath).Trim().TrimStart('\uFEFF'), strmUrl, StringComparison.Ordinal))
                 {
-                    File.WriteAllText(strmPath, strmUrl + "\n", Encoding.UTF8);
+                    File.WriteAllText(strmPath, strmUrl + "\n", utf8NoBom);
                 }
 
                 writtenFiles.Add(Path.GetFullPath(strmPath));

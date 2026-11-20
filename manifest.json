@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.10.0",
+        "changelog": "Fix timeline seek doubling bug on .strm HTTP sources: add PlaybackInfoFixFilter to convert Static=true TranscodingUrl responses into proper SupportsDirectStream=true responses (eliminating 2x transcodingOffsetTicks jumps in jellyfin-web), populate real remote Size & Bitrate instead of 75-byte .strm stub size, and silence normal client-disconnect warnings during Byte-Range seeks.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.10/mergerfin_0.1.10.0.zip",
+        "checksum": "5ab1573ce0c162a33764c60a9bcf2df4",
+        "timestamp": "2026-11-21T00:49:00Z"
+      },
+      {
         "version": "0.1.9.0",
         "changelog": "Relay timeline seeks (>15s jumps) immediately to remote dashboards without waiting for the 10s progress interval, and set CanSeek=true on relayed playstate.",
         "targetAbi": "12.4.0.0",

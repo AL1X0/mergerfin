@@ -195,8 +195,19 @@ public class MergerFinController : ControllerBase
             return;
         }
 
-        await using var bodyStream = await upResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        await bodyStream.CopyToAsync(Response.Body, 65536, ct).ConfigureAwait(false);
+        try
+        {
+            await using var bodyStream = await upResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            await bodyStream.CopyToAsync(Response.Body, 65536, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Normal when client aborts an open Range stream during a timeline seek.
+        }
+        catch (IOException) when (ct.IsCancellationRequested)
+        {
+            // Normal client disconnect during seek.
+        }
     }
 
     private (string? UserId, string Username) ResolveCallerUser()
