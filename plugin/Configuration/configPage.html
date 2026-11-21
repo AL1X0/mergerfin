@@ -8,7 +8,7 @@
 <div id="MergerFinConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
   <style>
     #MergerFinConfigPage .mf-wrap {
-      max-width: 820px;
+      max-width: 840px;
     }
     #MergerFinConfigPage .mf-card {
       padding: 16px 20px;
@@ -36,18 +36,48 @@
     #MergerFinConfigPage .mf-list {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
       margin-bottom: 16px;
     }
-    #MergerFinConfigPage .mf-row {
+    #MergerFinConfigPage .mf-srv-card {
+      padding: 14px 16px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #MergerFinConfigPage .mf-srv-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 16px;
-      border-radius: 6px;
-      background: rgba(255, 255, 255, 0.06);
       flex-wrap: wrap;
+    }
+    #MergerFinConfigPage .mf-srv-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    #MergerFinConfigPage .mf-inline-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.9em;
+    }
+    #MergerFinConfigPage .mf-inline-input,
+    #MergerFinConfigPage .mf-inline-select {
+      background: rgba(0, 0, 0, 0.35);
+      color: inherit;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 0.95em;
+    }
+    #MergerFinConfigPage .mf-inline-input {
+      width: 82px;
     }
     #MergerFinConfigPage .mf-msg {
       font-size: 0.92em;
@@ -126,7 +156,8 @@
         <h3 style="margin-top:0;">Remote Jellyfin Servers</h3>
         <div id="mfServersList" class="mf-list"></div>
 
-        <h4 style="margin-top:18px;margin-bottom:12px;">Add Remote Server (API Key)</h4>
+        <h4 id="mfSrvFormTitle" style="margin-top:18px;margin-bottom:12px;">Add Remote Server (API Key)</h4>
+        <input type="hidden" id="mfEditingSrvId" value="" />
         <div class="mf-grid-2">
           <div class="inputContainer">
             <label class="inputLabel inputLabelUnfocused" for="mfSrvName">Display Name</label>
@@ -154,7 +185,10 @@
         </div>
         <div class="mf-actions">
           <button id="mfAddSrvBtn" type="button" is="emby-button" class="raised button-submit">
-            <span>Test &amp; Add Server</span>
+            <span id="mfAddSrvBtnLabel">Test &amp; Add Server</span>
+          </button>
+          <button id="mfCancelEditBtn" type="button" is="emby-button" class="raised" style="display:none;">
+            <span>Cancel Edit</span>
           </button>
           <span id="mfSrvMsg" class="mf-msg"></span>
         </div>
@@ -219,21 +253,67 @@
         for (var i = 0; i < servers.length; i++) {
           var s = servers[i];
           var key = s.ApiKey || s.AccessToken || '';
-          html += '<div class="mf-row">' +
-            '<div>' +
-              '<strong>' + esc(s.Name) + '</strong>' +
-              '<span style="opacity:0.7;margin-left:8px;">' + esc(s.BaseUrl) + '</span>' +
-              '<div style="font-size:0.85em;opacity:0.8;margin-top:2px;">' +
-                'API Key: ' + esc(maskKey(key)) +
-                ' | Priority: ' + esc(s.Priority) +
-                ' | Mode: ' + esc(s.StreamMode || 'proxy') +
-                ' | ' + (s.Enabled ? 'Enabled' : 'Disabled') +
+          var mode = s.StreamMode || 'proxy';
+          html += '<div class="mf-srv-card" data-srv-card="' + esc(s.Id) + '">' +
+            '<div class="mf-srv-top">' +
+              '<div>' +
+                '<strong style="font-size:1.05em;">' + esc(s.Name) + '</strong>' +
+                '<span style="opacity:0.75;margin-left:8px;">' + esc(s.BaseUrl) + '</span>' +
+                '<span style="opacity:0.6;margin-left:10px;font-size:0.85em;">Key: ' + esc(maskKey(key)) + '</span>' +
+              '</div>' +
+              '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                '<button type="button" is="emby-button" class="raised" data-edit-server="' + esc(s.Id) + '">Edit</button>' +
+                '<button type="button" is="emby-button" class="raised" data-del-server="' + esc(s.Id) + '">Remove</button>' +
               '</div>' +
             '</div>' +
-            '<button type="button" is="emby-button" class="raised" data-del-server="' + esc(s.Id) + '">Remove</button>' +
+            '<div class="mf-srv-controls">' +
+              '<label class="mf-inline-field">Priority:' +
+                '<input type="number" class="mf-inline-input" data-prio-input="' + esc(s.Id) + '" value="' + esc(s.Priority) + '" min="1" max="9999" />' +
+              '</label>' +
+              '<label class="mf-inline-field">Mode:' +
+                '<select class="mf-inline-select" data-mode-select="' + esc(s.Id) + '">' +
+                  '<option value="proxy"' + (mode === 'proxy' ? ' selected' : '') + '>proxy</option>' +
+                  '<option value="redirect"' + (mode === 'redirect' ? ' selected' : '') + '>redirect (302)</option>' +
+                '</select>' +
+              '</label>' +
+              '<label class="mf-inline-field" style="cursor:pointer;">' +
+                '<input type="checkbox" data-enabled-chk="' + esc(s.Id) + '"' + (s.Enabled !== false ? ' checked' : '') + ' />' +
+                '<span>Enabled</span>' +
+              '</label>' +
+              '<button type="button" is="emby-button" class="raised button-submit" data-save-row="' + esc(s.Id) + '">Save</button>' +
+            '</div>' +
           '</div>';
         }
         list.innerHTML = html;
+      }
+
+      function resetSrvForm(page) {
+        page.querySelector('#mfEditingSrvId').value = '';
+        page.querySelector('#mfSrvFormTitle').textContent = 'Add Remote Server (API Key)';
+        page.querySelector('#mfAddSrvBtnLabel').textContent = 'Test & Add Server';
+        page.querySelector('#mfCancelEditBtn').style.display = 'none';
+        page.querySelector('#mfSrvName').value = '';
+        page.querySelector('#mfSrvUrl').value = '';
+        page.querySelector('#mfSrvApiKey').value = '';
+        page.querySelector('#mfSrvApiKey').placeholder = 'Paste API Key from Remote Dashboard -> API Keys';
+        page.querySelector('#mfSrvPrio').value = '100';
+        page.querySelector('#mfSrvMode').value = 'proxy';
+        page.querySelector('#mfSrvMsg').textContent = '';
+      }
+
+      function startEditServer(page, srv) {
+        page.querySelector('#mfEditingSrvId').value = srv.Id;
+        page.querySelector('#mfSrvFormTitle').textContent = 'Edit Remote Server — ' + srv.Name;
+        page.querySelector('#mfAddSrvBtnLabel').textContent = 'Save Server Changes';
+        page.querySelector('#mfCancelEditBtn').style.display = '';
+        page.querySelector('#mfSrvName').value = srv.Name || '';
+        page.querySelector('#mfSrvUrl').value = srv.BaseUrl || '';
+        page.querySelector('#mfSrvApiKey').value = '';
+        page.querySelector('#mfSrvApiKey').placeholder = 'Leave blank to keep existing API Key';
+        page.querySelector('#mfSrvPrio').value = String(srv.Priority || 100);
+        page.querySelector('#mfSrvMode').value = srv.StreamMode || 'proxy';
+        page.querySelector('#mfSrvMsg').textContent = '';
+        page.querySelector('#mfSrvName').focus();
       }
 
       function saveConfig() {
@@ -254,6 +334,7 @@
           page.querySelector('#mfSkipLocalDuplicates').checked = currentConfig.SkipLocalDuplicatesInStrm !== false;
           page.querySelector('#mfSyncWatchState').checked = currentConfig.SyncWatchStateToUpstreams !== false;
 
+          resetSrvForm(page);
           renderServers(page);
           return refreshStatus(page);
         }).finally(function () {
@@ -285,45 +366,71 @@
         });
       });
 
+      page.querySelector('#mfCancelEditBtn').addEventListener('click', function () {
+        resetSrvForm(page);
+      });
+
       page.querySelector('#mfAddSrvBtn').addEventListener('click', function () {
         var msg = page.querySelector('#mfSrvMsg');
+        var editingId = page.querySelector('#mfEditingSrvId').value;
         var name = page.querySelector('#mfSrvName').value.trim();
         var baseUrl = page.querySelector('#mfSrvUrl').value.trim();
-        var apiKey = page.querySelector('#mfSrvApiKey').value.trim();
+        var apiKeyInput = page.querySelector('#mfSrvApiKey').value.trim();
         var priority = parseInt(page.querySelector('#mfSrvPrio').value, 10) || 100;
         var streamMode = page.querySelector('#mfSrvMode').value || 'proxy';
 
-        if (!baseUrl || !apiKey) {
+        var existingSrv = null;
+        if (editingId) {
+          for (var i = 0; i < currentConfig.Servers.length; i++) {
+            if (currentConfig.Servers[i].Id === editingId) {
+              existingSrv = currentConfig.Servers[i];
+              break;
+            }
+          }
+        }
+
+        var effectiveKey = apiKeyInput || (existingSrv ? (existingSrv.ApiKey || existingSrv.AccessToken || '') : '');
+        if (!baseUrl || !effectiveKey) {
           msg.textContent = 'Server Base URL and API Key are required.';
           return;
         }
+
         msg.textContent = 'Testing API Key...';
         apiCall('MergerFin/Servers/Test', 'POST', {
           baseUrl: baseUrl,
-          apiKey: apiKey
+          apiKey: effectiveKey
         }).then(function (probe) {
           if (!probe.online || probe.error) {
             msg.textContent = 'Error: ' + (probe.error || 'API Key rejected');
             return;
           }
-          var newId = (window.crypto && crypto.randomUUID)
-            ? crypto.randomUUID().replace(/-/g, '')
-            : String(Date.now());
-          currentConfig.Servers.push({
-            Id: newId,
-            Name: name || probe.serverName || baseUrl,
-            BaseUrl: baseUrl.replace(/\/+$/, ''),
-            ApiKey: apiKey,
-            AccessToken: '',
-            Priority: priority,
-            StreamMode: streamMode,
-            Enabled: true
-          });
+
+          if (existingSrv) {
+            existingSrv.Name = name || probe.serverName || baseUrl;
+            existingSrv.BaseUrl = baseUrl.replace(/\/+$/, '');
+            existingSrv.ApiKey = effectiveKey;
+            existingSrv.AccessToken = '';
+            existingSrv.Priority = priority;
+            existingSrv.StreamMode = streamMode;
+          } else {
+            var newId = (window.crypto && crypto.randomUUID)
+              ? crypto.randomUUID().replace(/-/g, '')
+              : String(Date.now());
+            currentConfig.Servers.push({
+              Id: newId,
+              Name: name || probe.serverName || baseUrl,
+              BaseUrl: baseUrl.replace(/\/+$/, ''),
+              ApiKey: effectiveKey,
+              AccessToken: '',
+              Priority: priority,
+              StreamMode: streamMode,
+              Enabled: true
+            });
+          }
+
           return saveConfig().then(function () {
-            page.querySelector('#mfSrvName').value = '';
-            page.querySelector('#mfSrvUrl').value = '';
-            page.querySelector('#mfSrvApiKey').value = '';
-            msg.textContent = 'Connected to "' + probe.serverName + '" (v' + probe.version + ', ' + probe.userCount + ' users, ' + probe.latencyMs + 'ms) and saved!';
+            resetSrvForm(page);
+            msg.textContent = 'Saved "' + (name || probe.serverName) + '" (v' + probe.version + ', ' + probe.latencyMs + 'ms)!';
             renderServers(page);
           });
         }).catch(function () {
@@ -332,10 +439,46 @@
       });
 
       page.querySelector('#mfServersList').addEventListener('click', function (e) {
-        var btn = e.target.closest('[data-del-server]');
-        if (!btn) return;
-        var id = btn.dataset.delServer;
+        var saveBtn = e.target.closest('[data-save-row]');
+        if (saveBtn) {
+          var srvId = saveBtn.dataset.saveRow;
+          var card = saveBtn.closest('[data-srv-card]');
+          for (var i = 0; i < currentConfig.Servers.length; i++) {
+            if (currentConfig.Servers[i].Id === srvId) {
+              var prioEl = card.querySelector('[data-prio-input]');
+              var modeEl = card.querySelector('[data-mode-select]');
+              var enEl = card.querySelector('[data-enabled-chk]');
+              currentConfig.Servers[i].Priority = parseInt(prioEl.value, 10) || 100;
+              currentConfig.Servers[i].StreamMode = modeEl.value || 'proxy';
+              currentConfig.Servers[i].Enabled = !!enEl.checked;
+              break;
+            }
+          }
+          saveConfig().then(function () {
+            renderServers(page);
+          });
+          return;
+        }
+
+        var editBtn = e.target.closest('[data-edit-server]');
+        if (editBtn) {
+          var editId = editBtn.dataset.editServer;
+          for (var j = 0; j < currentConfig.Servers.length; j++) {
+            if (currentConfig.Servers[j].Id === editId) {
+              startEditServer(page, currentConfig.Servers[j]);
+              break;
+            }
+          }
+          return;
+        }
+
+        var delBtn = e.target.closest('[data-del-server]');
+        if (!delBtn) return;
+        var id = delBtn.dataset.delServer;
         currentConfig.Servers = currentConfig.Servers.filter(function (s) { return s.Id !== id; });
+        if (page.querySelector('#mfEditingSrvId').value === id) {
+          resetSrvForm(page);
+        }
         saveConfig().then(function () {
           renderServers(page);
         });
