@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.11.0",
+        "changelog": "Fix live progress timecode updates on remote servers running the PlaybackReporting plugin: PlaybackReporting crashes with HTTP 400 ArgumentOutOfRangeException (e.Users[0]) on /Sessions/Playing/Progress for API-key sessions, so MergerFin now automatically falls back to /Sessions/Playing (HTTP 204, updates PositionTicks + WebSocket every 5s and immediately on seek/pause).",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.11/mergerfin_0.1.11.0.zip",
+        "checksum": "5b552d5d5358c0c2e4f45389e75f1367",
+        "timestamp": "2026-11-21T00:59:00Z"
+      },
+      {
         "version": "0.1.10.0",
         "changelog": "Fix timeline seek doubling bug on .strm HTTP sources: add PlaybackInfoFixFilter to convert Static=true TranscodingUrl responses into proper SupportsDirectStream=true responses (eliminating 2x transcodingOffsetTicks jumps in jellyfin-web), populate real remote Size & Bitrate instead of 75-byte .strm stub size, and silence normal client-disconnect warnings during Byte-Range seeks.",
         "targetAbi": "12.4.0.0",

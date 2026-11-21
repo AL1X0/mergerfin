@@ -29,6 +29,7 @@ public class UpstreamClient
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<UpstreamClient> _logger;
     private readonly ConcurrentDictionary<string, (DateTime FetchedAtUtc, Dictionary<string, string> UsersByName)> _remoteUsersCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _usePlayingFallbackForProgress = new(StringComparer.OrdinalIgnoreCase);
 
     public UpstreamClient(IHttpClientFactory httpClientFactory, ILogger<UpstreamClient> logger)
     {
@@ -40,7 +41,7 @@ public class UpstreamClient
     {
         if (id == null || (string.IsNullOrWhiteSpace(id.LocalUsername) && string.IsNullOrWhiteSpace(id.ClientName)))
         {
-            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.10\"";
+            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.11\"";
             return string.IsNullOrEmpty(apiKey) ? baseHdr : $"{baseHdr}, Token=\"{Sanitize(apiKey, 256)}\"";
         }
 
@@ -53,7 +54,7 @@ public class UpstreamClient
             : (string.IsNullOrEmpty(device) ? "Jellyfin Host" : device);
 
         var devId = BuildDeviceId(user, id.DeviceId);
-        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.10\"";
+        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.11\"";
         if (!string.IsNullOrEmpty(apiKey))
         {
             header += $", Token=\"{Sanitize(apiKey, 256)}\"";
@@ -436,17 +437,39 @@ public class UpstreamClient
             return;
         }
 
+        var isProgress = string.Equals(endpointPath, "/Sessions/Playing/Progress", StringComparison.OrdinalIgnoreCase);
+        if (isProgress && _usePlayingFallbackForProgress.ContainsKey(srv.Id))
+        {
+            endpointPath = "/Sessions/Playing";
+        }
+
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
-        var url = $"{baseUrl}{endpointPath}";
-        using var req = new HttpRequestMessage(HttpMethod.Post, url);
-        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey, identity));
-        req.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        var authHeader = BuildMediaBrowserHeader(apiKey, identity);
+        var jsonPayload = JsonSerializer.Serialize(body);
 
         try
         {
             var client = _httpClientFactory.CreateClient("MergerFin");
             client.Timeout = TimeSpan.FromSeconds(10);
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}{endpointPath}");
+            req.Headers.TryAddWithoutValidation("Authorization", authHeader);
+            req.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
             using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
+
+            // Jellyfin's PlaybackReporting plugin throws ArgumentOutOfRangeException (HTTP 400)
+            // on /Sessions/Playing/Progress for API-key sessions (Users.Count == 0), whereas
+            // /Sessions/Playing succeeds with HTTP 204 and updates PositionTicks + WebSocket live!
+            if (isProgress && (int)resp.StatusCode == 400 &&
+                !string.Equals(endpointPath, "/Sessions/Playing", StringComparison.OrdinalIgnoreCase))
+            {
+                _usePlayingFallbackForProgress[srv.Id] = true;
+                using var retryReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/Sessions/Playing");
+                retryReq.Headers.TryAddWithoutValidation("Authorization", authHeader);
+                retryReq.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                using var retryResp = await client.SendAsync(retryReq, ct).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {

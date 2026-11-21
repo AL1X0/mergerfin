@@ -26,7 +26,7 @@ namespace Jellyfin.Plugin.MergerFin.Services;
 public class WatchStateSyncService : IHostedService, IDisposable
 {
     private static readonly TimeSpan UserDataCooldown = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan ProgressRelayInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ProgressRelayInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StaleSessionTimeout = TimeSpan.FromSeconds(90);
 
     private readonly ISessionManager _sessionManager;
