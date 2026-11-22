@@ -55,15 +55,71 @@ public class IndexedMediaStream
 
     public string Codec { get; set; } = string.Empty;
 
+    public string? CodecTag { get; set; }
+
     public string Language { get; set; } = string.Empty;
 
     public string Title { get; set; } = string.Empty;
 
     public string DisplayTitle { get; set; } = string.Empty;
 
+    public string? Profile { get; set; }
+
+    public double? Level { get; set; }
+
+    public int? BitDepth { get; set; }
+
+    public string? PixelFormat { get; set; }
+
+    public string? ChannelLayout { get; set; }
+
+    public float? AverageFrameRate { get; set; }
+
+    public float? RealFrameRate { get; set; }
+
+    public string? AspectRatio { get; set; }
+
+    public string? ColorRange { get; set; }
+
+    public string? ColorSpace { get; set; }
+
+    public string? ColorTransfer { get; set; }
+
+    public string? ColorPrimaries { get; set; }
+
+    public int? DvVersionMajor { get; set; }
+
+    public int? DvVersionMinor { get; set; }
+
+    public int? DvProfile { get; set; }
+
+    public int? DvLevel { get; set; }
+
+    public int? RpuPresentFlag { get; set; }
+
+    public int? ElPresentFlag { get; set; }
+
+    public int? BlPresentFlag { get; set; }
+
+    public int? DvBlSignalCompatibilityId { get; set; }
+
+    public bool? Hdr10PlusPresentFlag { get; set; }
+
+    public bool IsInterlaced { get; set; }
+
+    public bool? IsAnamorphic { get; set; }
+
+    public bool? IsAVC { get; set; }
+
+    public int? RefFrames { get; set; }
+
     public bool IsDefault { get; set; }
 
     public bool IsForced { get; set; }
+
+    public bool IsHearingImpaired { get; set; }
+
+    public bool IsOriginal { get; set; }
 
     public bool IsExternal { get; set; }
 
@@ -236,6 +292,9 @@ public class RemoteMediaStreamDto
     [JsonPropertyName("Codec")]
     public string? Codec { get; set; }
 
+    [JsonPropertyName("CodecTag")]
+    public string? CodecTag { get; set; }
+
     [JsonPropertyName("Language")]
     public string? Language { get; set; }
 
@@ -245,11 +304,92 @@ public class RemoteMediaStreamDto
     [JsonPropertyName("DisplayTitle")]
     public string? DisplayTitle { get; set; }
 
+    [JsonPropertyName("Profile")]
+    public string? Profile { get; set; }
+
+    [JsonPropertyName("Level")]
+    public double? Level { get; set; }
+
+    [JsonPropertyName("BitDepth")]
+    public int? BitDepth { get; set; }
+
+    [JsonPropertyName("PixelFormat")]
+    public string? PixelFormat { get; set; }
+
+    [JsonPropertyName("ChannelLayout")]
+    public string? ChannelLayout { get; set; }
+
+    [JsonPropertyName("AverageFrameRate")]
+    public float? AverageFrameRate { get; set; }
+
+    [JsonPropertyName("RealFrameRate")]
+    public float? RealFrameRate { get; set; }
+
+    [JsonPropertyName("AspectRatio")]
+    public string? AspectRatio { get; set; }
+
+    [JsonPropertyName("ColorRange")]
+    public string? ColorRange { get; set; }
+
+    [JsonPropertyName("ColorSpace")]
+    public string? ColorSpace { get; set; }
+
+    [JsonPropertyName("ColorTransfer")]
+    public string? ColorTransfer { get; set; }
+
+    [JsonPropertyName("ColorPrimaries")]
+    public string? ColorPrimaries { get; set; }
+
+    [JsonPropertyName("DvVersionMajor")]
+    public int? DvVersionMajor { get; set; }
+
+    [JsonPropertyName("DvVersionMinor")]
+    public int? DvVersionMinor { get; set; }
+
+    [JsonPropertyName("DvProfile")]
+    public int? DvProfile { get; set; }
+
+    [JsonPropertyName("DvLevel")]
+    public int? DvLevel { get; set; }
+
+    [JsonPropertyName("RpuPresentFlag")]
+    public int? RpuPresentFlag { get; set; }
+
+    [JsonPropertyName("ElPresentFlag")]
+    public int? ElPresentFlag { get; set; }
+
+    [JsonPropertyName("BlPresentFlag")]
+    public int? BlPresentFlag { get; set; }
+
+    [JsonPropertyName("DvBlSignalCompatibilityId")]
+    public int? DvBlSignalCompatibilityId { get; set; }
+
+    [JsonPropertyName("Hdr10PlusPresentFlag")]
+    public bool? Hdr10PlusPresentFlag { get; set; }
+
+    [JsonPropertyName("IsInterlaced")]
+    public bool IsInterlaced { get; set; }
+
+    [JsonPropertyName("IsAnamorphic")]
+    public bool? IsAnamorphic { get; set; }
+
+    [JsonPropertyName("IsAVC")]
+    public bool? IsAVC { get; set; }
+
+    [JsonPropertyName("RefFrames")]
+    public int? RefFrames { get; set; }
+
     [JsonPropertyName("IsDefault")]
     public bool IsDefault { get; set; }
 
     [JsonPropertyName("IsForced")]
     public bool IsForced { get; set; }
+
+    [JsonPropertyName("IsHearingImpaired")]
+    public bool IsHearingImpaired { get; set; }
+
+    [JsonPropertyName("IsOriginal")]
+    public bool IsOriginal { get; set; }
 
     [JsonPropertyName("IsExternal")]
     public bool IsExternal { get; set; }

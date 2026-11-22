@@ -69,22 +69,7 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
                 continue;
             }
 
-            var streams = src.Streams.Select(st => new MediaStream
-            {
-                Type = ParseStreamType(st.Type),
-                Index = st.Index,
-                Codec = st.Codec,
-                Language = st.Language,
-                Title = st.Title,
-                IsDefault = st.IsDefault,
-                IsForced = st.IsForced,
-                IsExternal = st.IsExternal,
-                Width = st.Width,
-                Height = st.Height,
-                BitRate = st.BitRate,
-                Channels = st.Channels,
-                SampleRate = st.SampleRate
-            }).ToList();
+            var streams = BuildMediaStreams(src.Streams);
 
             results.Add(new MediaSourceInfo
             {
@@ -93,19 +78,103 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
                 Path = $"{localBase}/MergerFin/Stream/{src.SourceId}",
                 Protocol = MediaProtocol.Http,
                 Type = MediaSourceType.Default,
-                Container = string.IsNullOrWhiteSpace(src.Container) ? "mkv" : src.Container,
+                VideoType = VideoType.VideoFile,
+                Container = NormalizeContainer(src.Container),
                 Size = src.Size > 0 ? src.Size : null,
                 Bitrate = src.Bitrate > 0 ? src.Bitrate : null,
                 RunTimeTicks = src.RunTimeTicks > 0 ? src.RunTimeTicks : item.RunTimeTicks,
+                ETag = src.SourceId,
                 SupportsDirectPlay = true,
                 SupportsDirectStream = true,
                 SupportsTranscoding = true,
-                IsRemote = true,
+                IsRemote = false,
                 MediaStreams = streams
             });
         }
 
         return Task.FromResult<IEnumerable<MediaSourceInfo>>(results);
+    }
+
+    public static List<MediaStream> BuildMediaStreams(IEnumerable<IndexedMediaStream> sourceStreams)
+    {
+        return sourceStreams
+            .Where(st => !st.IsExternal)
+            .Select(st => new MediaStream
+            {
+                Type = ParseStreamType(st.Type),
+                Index = st.Index,
+                Codec = string.IsNullOrWhiteSpace(st.Codec) ? null : st.Codec,
+                CodecTag = st.CodecTag,
+                Language = string.IsNullOrWhiteSpace(st.Language) ? null : st.Language,
+                Title = string.IsNullOrWhiteSpace(st.Title) ? null : st.Title,
+                Profile = st.Profile,
+                Level = st.Level,
+                BitDepth = st.BitDepth,
+                PixelFormat = st.PixelFormat,
+                ChannelLayout = st.ChannelLayout,
+                AverageFrameRate = st.AverageFrameRate,
+                RealFrameRate = st.RealFrameRate,
+                AspectRatio = st.AspectRatio,
+                ColorRange = st.ColorRange,
+                ColorSpace = st.ColorSpace,
+                ColorTransfer = st.ColorTransfer,
+                ColorPrimaries = st.ColorPrimaries,
+                DvVersionMajor = st.DvVersionMajor,
+                DvVersionMinor = st.DvVersionMinor,
+                DvProfile = st.DvProfile,
+                DvLevel = st.DvLevel,
+                RpuPresentFlag = st.RpuPresentFlag,
+                ElPresentFlag = st.ElPresentFlag,
+                BlPresentFlag = st.BlPresentFlag,
+                DvBlSignalCompatibilityId = st.DvBlSignalCompatibilityId,
+                Hdr10PlusPresentFlag = st.Hdr10PlusPresentFlag,
+                IsInterlaced = st.IsInterlaced,
+                IsAnamorphic = st.IsAnamorphic,
+                IsAVC = st.IsAVC,
+                RefFrames = st.RefFrames,
+                IsDefault = st.IsDefault,
+                IsForced = st.IsForced,
+                IsHearingImpaired = st.IsHearingImpaired,
+                IsOriginal = st.IsOriginal,
+                IsExternal = false,
+                Width = st.Width,
+                Height = st.Height,
+                BitRate = st.BitRate,
+                Channels = st.Channels,
+                SampleRate = st.SampleRate
+            })
+            .ToList();
+    }
+
+    public static string NormalizeContainer(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) ||
+            string.Equals(raw.Trim(), "strm", StringComparison.OrdinalIgnoreCase))
+        {
+            return "mkv";
+        }
+
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            return "mkv";
+        }
+
+        var chosen = parts.FirstOrDefault(p => string.Equals(p, "mp4", StringComparison.OrdinalIgnoreCase))
+            ?? parts.FirstOrDefault(p => string.Equals(p, "mkv", StringComparison.OrdinalIgnoreCase))
+            ?? parts[0];
+
+        chosen = chosen.ToLowerInvariant() switch
+        {
+            "matroska" => "mkv",
+            "mpegts" => "ts",
+            _ => chosen.ToLowerInvariant()
+        };
+
+        var clean = new string(chosen.Where(char.IsLetterOrDigit).ToArray());
+        return string.IsNullOrEmpty(clean) || string.Equals(clean, "strm", StringComparison.OrdinalIgnoreCase)
+            ? "mkv"
+            : clean;
     }
 
     public Task<ILiveStream> OpenMediaSource(string openToken, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)

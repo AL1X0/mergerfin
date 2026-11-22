@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.13.0",
+        "changelog": "Fix playback on third-party Jellyfin clients (OptiFin, Wholphin, Jellyfin Android TV, Infuse, Swiftfin, Findroid): restore SupportsDirectPlay=true when undoing ForceRemoteSourceTranscoding Static=true overrides (instead of leaving SupportsDirectPlay=false with TranscodingUrl=null), sanitize client-facing DTOs to Protocol=File / IsRemote=false / virtual Path so clients never filter out HTTP/remote sources or connect to loopback 127.0.0.1, strip forced allowVideoStreamCopy=false / allowAudioStreamCopy=false on HLS remuxes, backfill real metadata/MediaStreams on BaseItemDto (skipped for MergerFin mesh sync callers), and copy full MediaStream codec/HDR metadata on multi-version mf_* sources.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.13/mergerfin_0.1.13.0.zip",
+        "checksum": "f5d8a5cc9a77d057327ae39bc59c41c0",
+        "timestamp": "2026-11-22T15:27:00Z"
+      },
+      {
         "version": "0.1.12.0",
         "changelog": "Add inline Priority, Stream Mode, and Enabled editing + full server Edit button (preserving existing API Key when left blank) in the plugin configuration page.",
         "targetAbi": "12.4.0.0",
