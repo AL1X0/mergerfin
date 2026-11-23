@@ -1,163 +1,101 @@
 # MergerFin
 
-[![CI](https://github.com/AL1X0/mergerfin/actions/workflows/ci.yml/badge.svg)](https://github.com/AL1X0/mergerfin/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/badge/ghcr.io-al1x0%2Fmergerfin-00a4dc?logo=docker&logoColor=white)](https://ghcr.io/al1x0/mergerfin)
-[![Go Version](https://img.shields.io/badge/go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.4%2B-00A4DC?logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![Plugin Version](https://img.shields.io/badge/Plugin-v0.1.13.0-blue)](manifest.json)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-**MergerFin** is an open-source unified virtual Jellyfin server — think `mergerfs` for multiple remote Jellyfin servers and user accounts.
+**MergerFin** is an open-source native Jellyfin plugin that federates one or more remote Jellyfin servers directly into your existing Jellyfin server.
 
-Instead of switching between servers inside your media apps or maintaining separate libraries and watch histories, MergerFin aggregates any number of upstream Jellyfin instances into a **single virtual Jellyfin `12.4` / `10.10+` server** with:
-
-- A native **Jellyfin Web UI** served at `/web`
-- A built-in, zero-dependency **Admin Portal** at `/admin`
-- Unified **Movies** and **TV Shows** libraries with cross-server deduplication
-- Native **multi-source version selection** (`MediaSources[]`) in Jellyfin clients
-- **Zero-copy Direct Stream** (`206 Partial Content` / `302 Redirect`) and **Dynamic HLS `.m3u8` Proxy**
-- **Bidirectional Watch State Sync** and **cross-server Next Up**
+Instead of switching between servers in your media apps or running an external proxy, MergerFin integrates remote catalogs natively inside your Jellyfin instance with multi-version deduplication, optional remote-only `.strm` library indexing, and automatic watch-state synchronization.
 
 ---
 
-## Architecture
+## Installation (Plugin Repository)
 
-```mermaid
-flowchart LR
-    Clients["Jellyfin Clients (Web / Swiftfin / Infuse / Kodi / Android TV)"]
-    API["MergerFin API & Router (chi + WebSocket Hub)"]
-    DB["SQLite + FTS5 Catalog (mergerfin.db)"]
-    Stream["Stream & HLS Proxy (206 Range / 302 / .m3u8 Rewriter)"]
-    Admin["Embedded Admin UI (/admin)"]
-    UpA["Upstream Jellyfin A (Priority 10)"]
-    UpB["Upstream Jellyfin B (Priority 20)"]
-
-    Clients -->|"REST + WebSocket"| API
-    Clients -->|"Direct Stream / HLS"| Stream
-    Clients -->|"Browser Management"| Admin
-    API --> DB
-    Admin --> DB
-    Stream -->|"ApiKey + X-Emby-Token"| UpA
-    Stream -->|"ApiKey + X-Emby-Token"| UpB
-    API -->|"Sync / Watch State / WS Listener"| UpA
-    API -->|"Sync / Watch State / WS Listener"| UpB
-```
-
----
-
-## Key Capabilities
-
-### 1. Entity Deduplication via `ProviderIds`
-During catalog synchronization, MergerFin normalizes external provider metadata (`Tmdb`, `Imdb`, `Tvdb`) and computes deterministic canonical keys:
-- **Movies**: `movie:tmdb:<id>` -> `movie:imdb:<id>` -> `movie:slug:<slug>:year:<year>`
-- **Series**: `series:tmdb:<id>` -> `series:tvdb:<id>` -> `series:imdb:<id>` -> `series:slug:<slug>`
-- **Seasons & Episodes**: Resolved under the canonical series key (`season:<seriesKey>:s<n>`, `episode:<seriesKey>:s<n>:e<n>`), allowing seasons and episodes of the same show split across multiple servers to merge seamlessly into one unified series view.
-
-Metadata and artwork are owned by the highest-priority upstream server (lowest priority integer), with missing fields automatically backfilled from secondary servers.
-
-### 2. Native Multi-Server `MediaSources[]` Selector
-When the same movie or episode exists on multiple upstream servers (for example, a 4K REMUX on Server A and a 1080p H.264 encode on Server B), MergerFin attaches all sources to the single virtual item. Every source is labeled cleanly:
+Add the MergerFin repository URL to your Jellyfin server:
 
 ```text
-[Upstream A] 2160p HEVC (25.0 Mbps)
-[Upstream B] 1080p H264 (8.0 Mbps)
+https://raw.githubusercontent.com/AL1X0/mergerfin/main/manifest.json
 ```
 
-Jellyfin clients display these natively in their **Version** dropdown, and MergerFin's `PlaybackInfo` negotiator fans out in parallel (`4s` timeout) and ranks candidates by requested `MediaSourceId` -> `SupportsDirectPlay` -> `SupportsDirectStream` -> server `Priority` -> `Bitrate`.
+### Step-by-Step
+
+1. Open your Jellyfin web interface and go to **Dashboard** → **Plugins** → **Repositories** (or **Catalog** → ⚙️ **Repositories**).
+2. Click **Add** (`+`) and fill in:
+   - **Repository Name**: `MergerFin`
+   - **Repository URL**: `https://raw.githubusercontent.com/AL1X0/mergerfin/main/manifest.json`
+3. Click **Save**, then switch to the **Catalog** tab.
+4. Locate **MergerFin** (under **General**), select the latest version, and click **Install**.
+5. **Restart your Jellyfin server** to load the plugin.
+
+---
+
+## How It Works
+
+### 1. Native Multi-Version Injection (`IMediaSourceProvider`)
+MergerFin indexes movies and episodes from your configured remote Jellyfin servers and matches them to your local library via external provider IDs (`TMDB`, `TVDB`, `IMDb`). When a title exists on both your local server and one or more remote servers, MergerFin injects the remote versions directly into Jellyfin's native **Version** selector:
+
+```text
+[Server A] 2160p HEVC (25.0 Mbps)
+[Server B] 1080p H264 (8.0 Mbps)
+```
+
+### 2. Optional Remote-Only `.strm` Library
+If you also want to browse movies and TV shows that exist **only** on your remote servers, set a **Remote-Only `.strm` Output Directory** in the plugin settings. MergerFin automatically writes lightweight `.strm` files organized into `Movies/` and `Shows/` subfolders, cleans up stale files, backfills missing runtimes (`RunTimeTicks`) for Continue Watching, and fixes `PlaybackInfo` metadata (real remote file size, bitrate, and accurate timeline seeking).
 
 ### 3. Streaming Modes: `proxy` vs `redirect`
-Each upstream server can be configured independently in `/admin`:
-- **`proxy` (default)**: MergerFin streams bytes zero-copy from upstream to client with full `Range` / `If-Range` / `206 Partial Content` support, plus dynamic HLS `.m3u8` rewriting (including `#EXT-X-MAP` fMP4 initialization segments) that keeps upstream `ApiKey` credentials completely hidden from clients.
-- **`redirect`**: MergerFin issues an `HTTP 302 Found` redirect directly to the upstream server's `/Videos/{id}/stream` endpoint when clients have direct network reachability.
+Each remote server can be configured independently:
+- **`proxy` (default)**: Streams media through your local Jellyfin server (`/MergerFin/Stream/{sourceId}`) with full HTTP `Range` / `206 Partial Content` support, keeping remote API keys hidden from clients.
+- **`redirect`**: Returns an `HTTP 302` redirect directly to the remote Jellyfin server.
 
-### 4. Bidirectional Watch State Sync & Cross-Server `NextUp`
-- Playback start, progress (throttled to `10s` intervals per user/item or immediate on pause/resume), completion (`>= 90%` runtime on stop), played toggles, and favorites are persisted locally in SQLite and fanned out asynchronously to **all** enabled upstream servers owning that item.
-- Because episode completion is unified in local SQLite, watching `S01E01` on Upstream A automatically surfaces `S01E02` from Upstream B in `/Shows/NextUp`.
-- Upstream `LibraryChanged` and `UserDataChanged` WebSocket events trigger debounced delta syncs and forward real-time updates to connected Jellyfin clients.
+### 4. API Key Mode & Automatic Watch-State Sync
+- Remote servers authenticate with a single Jellyfin **API Key** — no per-user credentials or manual account mapping required.
+- When a local user watches, pauses, seeks, completes, toggles played status, or favorites a remote item, MergerFin relays live playback status to the active remote server and syncs watch state to matching remote users automatically by **username**.
 
----
-
-## Quick Start
-
-### 1. Create `docker-compose.yml`
-
-```yaml
-services:
-  mergerfin:
-    image: ghcr.io/al1x0/mergerfin:latest
-    container_name: mergerfin
-    restart: unless-stopped
-    ports:
-      - "${MERGERFIN_HOST_PORT:-8096}:8096"
-    volumes:
-      - "${MERGERFIN_DATA_DIR:-./data}:/data"
-    environment:
-      MERGERFIN_PORT: "${MERGERFIN_PORT:-8096}"
-      MERGERFIN_DATA_DIR: /data
-      MERGERFIN_WEB_DIR: /app/web
-      MERGERFIN_SERVER_NAME: "${MERGERFIN_SERVER_NAME:-MergerFin}"
-      MERGERFIN_ADMIN_USER: "${MERGERFIN_ADMIN_USER:-admin}"
-      MERGERFIN_ADMIN_PASS: "${MERGERFIN_ADMIN_PASS:-change-me}"
-      MERGERFIN_SECRET_KEY: "${MERGERFIN_SECRET_KEY:-}"
-      MERGERFIN_SYNC_INTERVAL: "${MERGERFIN_SYNC_INTERVAL:-30m}"
-      MERGERFIN_LOG_LEVEL: "${MERGERFIN_LOG_LEVEL:-info}"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8096/System/Info/Public >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-```
-
-Start the container:
-
-```bash
-docker compose up -d
-```
-
-### 2. Configure Upstream Servers in `/admin`
-1. Open **`http://localhost:8096/admin`** in your browser and sign in with `MERGERFIN_ADMIN_USER` / `MERGERFIN_ADMIN_PASS`.
-2. Click **+ Add Server**, enter your upstream Jellyfin URL, credentials, **Priority** (lower number = higher priority), and **Stream Mode** (`proxy` or `redirect`).
-3. Click **Test Connection** to verify reachability, latency, and Jellyfin version, then save.
-4. Click **Sync Now** in the top bar to index your unified catalog.
-
-### 3. Connect Your Jellyfin Client
-Open **`http://localhost:8096/web`** (or point any Jellyfin app to `http://<your-host>:8096`) and log in with any local proxy user configured in `/admin`.
+### 5. Mesh Anti-Loop Protection
+Two or more Jellyfin servers running MergerFin can safely federate each other: MergerFin automatically ignores remote MergerFin `.strm` stubs, relayed `mf_*` sources, and relayed playback sessions so servers only share their own local files without catalog or playback echo loops.
 
 ---
 
-## Configuration (`MERGERFIN_*`)
+## Configuration
 
-| Environment Variable | Default | Description |
+### 1. Generate an API Key on Each Remote Server
+On each remote Jellyfin server you want to connect:
+1. Open **Dashboard** → **API Keys**.
+2. Click `+`, name the key (for example, `MergerFin`), and copy the generated key.
+
+### 2. Add Remote Servers
+On your local Jellyfin server, open **Dashboard** → **Plugins** → **MergerFin**:
+1. Under **Remote Jellyfin Servers**, fill in:
+   - **Display Name**: Label shown in the version selector (e.g. `[RemoteServer] 1080p H264`).
+   - **Server Base URL**: Base URL of the remote Jellyfin server (e.g. `https://jellyfin.example.com`).
+   - **Jellyfin API Key**: API key generated in Step 1.
+   - **Priority**: Lower number = higher priority (default `100`).
+   - **Stream Mode**: `proxy` or `redirect`.
+2. Click **Test & Add Server** to verify connectivity and save.
+3. You can later adjust **Priority**, **Stream Mode**, and **Enabled** inline, or click **Edit** to update server details.
+
+### 3. General Settings
+
+| Setting | Default | Description |
 | --- | --- | --- |
-| `MERGERFIN_PORT` | `8096` | Internal HTTP listen port (also configurable via `-port`). |
-| `MERGERFIN_HOST_PORT` | `8096` | Host port mapped by `docker-compose.yml` (compose / `.env` variable). |
-| `MERGERFIN_DATA_DIR` | `./data` (`/data` in Docker) | Directory storing SQLite (`mergerfin.db`) and image cache (`cache/images`). Also `-data-dir`. |
-| `MERGERFIN_WEB_DIR` | `/app/web` | Directory containing `jellyfin-web` static assets (also `-web-dir`). |
-| `MERGERFIN_SERVER_NAME` | `MergerFin` | Display server name returned by `/System/Info/Public` and Jellyfin clients. |
-| `MERGERFIN_ADMIN_USER` | `admin` | Initial administrator username created on first startup if missing. |
-| `MERGERFIN_ADMIN_PASS` | `admin` (`change-me` in `.env.example`) | Initial administrator password created on first startup. |
-| `MERGERFIN_SECRET_KEY` | `""` (empty) | Passphrase used with `encryption_salt` (PBKDF2-SHA256) to AES-256-GCM encrypt stored upstream tokens. |
-| `MERGERFIN_SYNC_INTERVAL` | `30m` | Periodic background sync interval (Go duration like `30m`, `1h`, or integer minutes). |
-| `MERGERFIN_LOG_LEVEL` | `info` | Structured log level (`debug`, `info`, `warn`, `error`). |
+| **Remote-Only `.strm` Output Directory** | *(empty)* | Optional folder where MergerFin writes `.strm` stubs (`Movies/` and `Shows/`) for remote titles. Add these subfolders to your Jellyfin libraries. Leave empty to only inject extra versions onto existing local items. |
+| **Local Jellyfin Base URL** | `http://127.0.0.1:8096` | Internal URL used for `/MergerFin/Stream/{id}` links inside `.strm` files and injected media sources. |
+| **Inject remote versions onto matching local movies & episodes** | Enabled | Attaches matching remote sources to local items via `IMediaSourceProvider`. |
+| **Skip `.strm` files for items already present locally** | Enabled | Prevents duplicate `.strm` entries when merging into existing libraries. Disable this if you use a dedicated standalone library for all remote content. |
+| **Sync local playback, played & favorite state back to remote servers** | Enabled | Syncs live playback progress, resume position, played status, and favorites to remote users matched by username. |
+
+### 4. Sync Your Catalog
+- Click **Sync Now** at the top of the MergerFin settings page to run an immediate sync.
+- MergerFin also registers a native Jellyfin scheduled task (**Dashboard → Scheduled Tasks → MergerFin → Sync MergerFin Remote Servers**) that runs automatically every 30 minutes.
+- If you enabled `.strm` output, run a Jellyfin library scan so the new `Movies/` and `Shows/` folders are indexed.
 
 ---
 
-## Client Compatibility
+## Compatibility
 
-MergerFin enforces Jellyfin `12.4.0` protocol invariants across all responses:
-- **Deterministic 32-char lowercase hex UUIDv5 IDs** (no hyphens) while accepting both 32-hex and 36-char hyphenated UUIDs on incoming routes and query parameters.
-- **Outer `/emby` and `/mediabrowser` prefix stripping** (case-insensitive) for legacy Emby/Kodi clients.
-- **Multi-format auth extraction** (`Authorization: MediaBrowser/Emby`, `X-Emby-Authorization`, `X-Emby-Token`, `X-MediaBrowser-Token`, `Authorization: Bearer`, `?api_key=`, `?ApiKey=`).
-
-| Client | Status | Notes |
-| --- | --- | --- |
-| **jellyfin-web** | Supported | Bundled at `/web` with `multiserver: false`. |
-| **Jellyfin Desktop / Media Player** | Supported | Full WebSocket keep-alive, `PlaybackInfo`, and version picker. |
-| **Swiftfin** | Supported | Native 32-hex IDs, non-null DTO arrays/maps, HLS & direct play. |
-| **Infuse** | Supported | Supports `MediaSources[]`, `Range` byte serving, and `ApiKey` auth. |
-| **Streamyfin** | Supported | Full catalog, search (FTS5), resume, and playstate reporting. |
-| **Findroid** | Supported | Multi-source selection, `/Items/Latest`, `/Shows/NextUp`. |
-| **Kodi (Jellyfin for Kodi)** | Supported | Case-insensitive `/emby` prefix stripping and WebSocket events. |
-| **Android TV** | Supported | Native `BaseItemDto`, `/Playback/BitrateTest`, and HLS transcoding proxy. |
+- **Jellyfin Server**: `12.4.0+` (`targetAbi: 12.4.0.0`)
+- **Clients**: Compatible with all native Jellyfin clients (Jellyfin Web, Jellyfin Media Player, Swiftfin, Infuse, Streamyfin, Findroid, Android TV, Kodi) since remote sources are served directly through Jellyfin's native APIs.
 
 ---
 

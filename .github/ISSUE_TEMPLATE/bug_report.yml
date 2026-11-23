@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug or unexpected behavior in MergerFin
+description: Report a bug or unexpected behavior in the MergerFin Jellyfin plugin
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -10,9 +10,9 @@ body:
   - type: input
     id: mergerfin_version
     attributes:
-      label: MergerFin Version
-      description: Docker tag, release version, or git commit SHA
-      placeholder: e.g. v0.1.0 or latest
+      label: MergerFin Plugin Version
+      description: Installed plugin version shown in Dashboard → Plugins
+      placeholder: e.g. 0.1.13.0
     validations:
       required: true
   - type: input
@@ -20,15 +20,15 @@ body:
     attributes:
       label: Jellyfin Client
       description: Which client and version were you using?
-      placeholder: e.g. jellyfin-web 12.4.0, Swiftfin 1.2, Infuse 7.7, Kodi
+      placeholder: e.g. jellyfin-web 12.4.0, Swiftfin, Infuse, Kodi
     validations:
       required: true
   - type: input
-    id: upstream_version
+    id: jellyfin_version
     attributes:
-      label: Upstream Jellyfin Version(s)
-      description: Version(s) of your upstream Jellyfin servers
-      placeholder: e.g. 12.4.0 / 10.10.x
+      label: Local & Remote Jellyfin Version(s)
+      description: Version(s) of your local and remote Jellyfin servers
+      placeholder: e.g. Local 12.4.0, Remote 12.4.0
     validations:
       required: true
   - type: textarea
@@ -42,5 +42,5 @@ body:
     id: logs
     attributes:
       label: Relevant Logs
-      description: Paste any relevant MergerFin logs (remember to redact tokens/passwords).
+      description: Paste any relevant Jellyfin server logs mentioning MergerFin (remember to redact API keys/tokens).
       render: shell
