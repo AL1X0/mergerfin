@@ -60,6 +60,37 @@ public class MergerFinController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("Servers/{serverId}/Libraries")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult<System.Collections.Generic.List<RemoteLibraryInfo>>> GetServerLibraries([FromRoute] string serverId, CancellationToken ct)
+    {
+        var cfg = Plugin.Instance?.Configuration;
+        var srv = cfg?.Servers.FirstOrDefault(s => string.Equals(s.Id, serverId, StringComparison.OrdinalIgnoreCase));
+        if (srv == null)
+        {
+            return NotFound(new { error = "Server not found." });
+        }
+
+        try
+        {
+            var folders = await _client.FetchVirtualFoldersAsync(srv, ct).ConfigureAwait(false);
+            var list = folders.Select(f => new RemoteLibraryInfo
+            {
+                Id = f.ItemId,
+                Name = f.Name,
+                CollectionType = string.IsNullOrWhiteSpace(f.CollectionType) ? "mixed" : f.CollectionType,
+                AutoTarget = CatalogSyncService.DetectDefaultTargetFolder(f.Name, f.CollectionType)
+            }).ToList();
+
+            return Ok(list);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MergerFin failed listing libraries on server {Server}", srv.Name);
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+        }
+    }
+
     [HttpPost("Sync")]
     [Authorize(Policy = "RequiresElevation")]
     public ActionResult TriggerSync()

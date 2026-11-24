@@ -71,8 +71,35 @@ public class RemoteServerConfig
 
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Optional per-library routing overrides for this remote server.
+    /// Libraries not listed (or set to "auto") are automatically routed by name and type
+    /// (e.g. libraries containing anime/animé/japanim go to "Anime", movies to "Movies", shows to "Shows").
+    /// </summary>
+    public List<LibraryMappingConfig> LibraryMappings { get; set; } = [];
+
     public string GetEffectiveApiKey()
     {
         return !string.IsNullOrWhiteSpace(ApiKey) ? ApiKey.Trim() : (AccessToken ?? string.Empty).Trim();
     }
+}
+
+public class LibraryMappingConfig
+{
+    /// <summary>
+    /// Remote Jellyfin library ItemId (from GET /Library/VirtualFolders).
+    /// </summary>
+    public string RemoteLibraryId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Cached remote library name (used for UI display and fallback matching).
+    /// </summary>
+    public string RemoteLibraryName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Target subfolder under StrmOutputPath:
+    /// "" or "auto" = automatic detection, "Movies", "Shows", "Anime", any custom folder name,
+    /// or "ignore" = skip this remote library completely.
+    /// </summary>
+    public string TargetFolder { get; set; } = string.Empty;
 }

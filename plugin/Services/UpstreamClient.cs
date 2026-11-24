@@ -216,7 +216,69 @@ public class UpstreamClient
         }
     }
 
-    public async Task<List<RemoteItemDto>> FetchAllItemsAsync(RemoteServerConfig srv, string[] itemTypes, CancellationToken ct)
+    private static readonly HashSet<string> SupportedLibraryCollectionTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        string.Empty,
+        "movies",
+        "tvshows",
+        "mixed"
+    };
+
+    /// <summary>
+    /// Fetches video libraries (movies, tvshows, mixed) from a remote Jellyfin server via GET /Library/VirtualFolders.
+    /// </summary>
+    public async Task<List<RemoteVirtualFolderDto>> FetchVirtualFoldersAsync(RemoteServerConfig srv, CancellationToken ct)
+    {
+        var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
+        var apiKey = srv.GetEffectiveApiKey();
+        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            return [];
+        }
+
+        var client = _httpClientFactory.CreateClient("MergerFin");
+        client.Timeout = TimeSpan.FromSeconds(15);
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/Library/VirtualFolders");
+        req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey));
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var folders = JsonSerializer.Deserialize<List<RemoteVirtualFolderDto>>(body, JsonOptions) ?? [];
+
+        var result = new List<RemoteVirtualFolderDto>();
+        foreach (var f in folders)
+        {
+            if (string.IsNullOrWhiteSpace(f.ItemId))
+            {
+                continue;
+            }
+
+            var colType = (f.CollectionType ?? string.Empty).Trim();
+            if (!SupportedLibraryCollectionTypes.Contains(colType))
+            {
+                continue;
+            }
+
+            result.Add(new RemoteVirtualFolderDto
+            {
+                Name = (f.Name ?? string.Empty).Trim(),
+                ItemId = f.ItemId.Trim(),
+                CollectionType = colType
+            });
+        }
+
+        return result;
+    }
+
+    public async Task<List<RemoteItemDto>> FetchAllItemsAsync(
+        RemoteServerConfig srv,
+        string[] itemTypes,
+        CancellationToken ct,
+        string? parentId = null)
     {
         var baseUrl = srv.BaseUrl.Trim().TrimEnd('/');
         var apiKey = srv.GetEffectiveApiKey();
@@ -227,11 +289,14 @@ public class UpstreamClient
         var all = new List<RemoteItemDto>();
         var startIndex = 0;
         var typesParam = Uri.EscapeDataString(string.Join(",", itemTypes));
+        var parentParam = string.IsNullOrWhiteSpace(parentId)
+            ? string.Empty
+            : $"&ParentId={Uri.EscapeDataString(parentId.Trim())}";
         const string fields = "ProviderIds,MediaSources,MediaStreams,ProductionYear,Path";
 
         while (true)
         {
-            var url = $"{baseUrl}/Items?Recursive=true&IncludeItemTypes={typesParam}&CollapseBoxSetItems=false&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
+            var url = $"{baseUrl}/Items?Recursive=true{parentParam}&IncludeItemTypes={typesParam}&CollapseBoxSetItems=false&Fields={fields}&StartIndex={startIndex}&Limit={pageSize}";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("Authorization", BuildMediaBrowserHeader(apiKey));

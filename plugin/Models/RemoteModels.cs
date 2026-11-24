@@ -44,6 +44,10 @@ public class IndexedRemoteSource
 
     public long RunTimeTicks { get; set; }
 
+    public string TargetFolder { get; set; } = string.Empty;
+
+    public string RemoteLibraryName { get; set; } = string.Empty;
+
     public List<IndexedMediaStream> Streams { get; set; } = [];
 }
 
@@ -183,6 +187,33 @@ public class PluginStatusResponse
 
     [JsonPropertyName("lastError")]
     public string LastError { get; set; } = string.Empty;
+}
+
+public class RemoteLibraryInfo
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("collectionType")]
+    public string CollectionType { get; set; } = string.Empty;
+
+    [JsonPropertyName("autoTarget")]
+    public string AutoTarget { get; set; } = string.Empty;
+}
+
+public class RemoteVirtualFolderDto
+{
+    [JsonPropertyName("Name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("ItemId")]
+    public string ItemId { get; set; } = string.Empty;
+
+    [JsonPropertyName("CollectionType")]
+    public string? CollectionType { get; set; }
 }
 
 public class UpstreamSessionIdentity

@@ -40,8 +40,10 @@ MergerFin indexes movies and episodes from your configured remote Jellyfin serve
 [Server B] 1080p H264 (8.0 Mbps)
 ```
 
-### 2. Optional Remote-Only `.strm` Library
-If you also want to browse movies and TV shows that exist **only** on your remote servers, set a **Remote-Only `.strm` Output Directory** in the plugin settings. MergerFin automatically writes lightweight `.strm` files organized into `Movies/` and `Shows/` subfolders, cleans up stale files, backfills missing runtimes (`RunTimeTicks`) for Continue Watching, and fixes `PlaybackInfo` metadata (real remote file size, bitrate, and accurate timeline seeking).
+### 2. Optional Remote-Only `.strm` Library (Movies / Shows / Anime)
+If you also want to browse movies, TV shows, and anime that exist **only** on your remote servers, set a **Remote-Only `.strm` Output Directory** in the plugin settings. MergerFin reads each remote server's Jellyfin libraries (`GET /Library/VirtualFolders`) and automatically organizes lightweight `.strm` files into `Movies/`, `Shows/`, and `Anime/` subfolders (libraries containing `anime`, `animé`, or `japanim` are routed to `Anime/` automatically), cleans up stale files and empty folders, backfills missing runtimes (`RunTimeTicks`) for Continue Watching, and fixes `PlaybackInfo` metadata (real remote file size, bitrate, and accurate timeline seeking).
+
+You can also click **Libraries** on any configured remote server to override the target folder per library (`Auto`, `Movies`, `Shows`, `Anime`, a custom subfolder name, or **`Ignore`** to skip a library completely).
 
 ### 3. Streaming Modes: `proxy` vs `redirect`
 Each remote server can be configured independently:
@@ -73,13 +75,13 @@ On your local Jellyfin server, open **Dashboard** → **Plugins** → **MergerFi
    - **Priority**: Lower number = higher priority (default `100`).
    - **Stream Mode**: `proxy` or `redirect`.
 2. Click **Test & Add Server** to verify connectivity and save.
-3. You can later adjust **Priority**, **Stream Mode**, and **Enabled** inline, or click **Edit** to update server details.
+3. You can later adjust **Priority**, **Stream Mode**, and **Enabled** inline, click **Libraries** to map or ignore individual remote libraries (`Movies`, `Shows`, `Anime`, custom folder, or `Ignore`), or click **Edit** to update server details.
 
 ### 3. General Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| **Remote-Only `.strm` Output Directory** | *(empty)* | Optional folder where MergerFin writes `.strm` stubs (`Movies/` and `Shows/`) for remote titles. Add these subfolders to your Jellyfin libraries. Leave empty to only inject extra versions onto existing local items. |
+| **Remote-Only `.strm` Output Directory** | *(empty)* | Optional folder where MergerFin writes `.strm` stubs (`Movies/`, `Shows/`, `Anime/`, or custom subfolders) for remote titles. Add each subfolder to its corresponding local Jellyfin library. Leave empty to only inject extra versions onto existing local items. |
 | **Local Jellyfin Base URL** | `http://127.0.0.1:8096` | Internal URL used for `/MergerFin/Stream/{id}` links inside `.strm` files and injected media sources. |
 | **Inject remote versions onto matching local movies & episodes** | Enabled | Attaches matching remote sources to local items via `IMediaSourceProvider`. |
 | **Skip `.strm` files for items already present locally** | Enabled | Prevents duplicate `.strm` entries when merging into existing libraries. Disable this if you use a dedicated standalone library for all remote content. |

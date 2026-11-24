@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  validate-manifest:
+  validate-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +24,8 @@ jobs:
           echo "manifest.json latest version: $manifest_ver"
           echo "plugin/meta.json version: $meta_ver"
           test "$manifest_ver" = "$meta_ver"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Jellyfin plugin DLL
+        run: docker buildx build -f plugin/Dockerfile --target builder plugin

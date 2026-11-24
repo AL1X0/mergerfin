@@ -1,0 +1,126 @@
+name: Release Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Plugin version (4-part, e.g. 0.1.14.0)'
+        required: true
+        type: string
+      changelog:
+        description: 'Changelog summary for manifest.json and GitHub Release'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Prepare version metadata
+        id: meta
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: $VERSION (expected X.Y.Z.W)" >&2
+            exit 1
+          fi
+          SHORT_VER="${VERSION%.0}"
+          TAG="plugin-v${SHORT_VER}"
+          TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_ver=$SHORT_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$TIMESTAMP" >> "$GITHUB_OUTPUT"
+
+      - name: Bump plugin version files
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHORT_VER: ${{ steps.meta.outputs.short_ver }}
+          TIMESTAMP: ${{ steps.meta.outputs.timestamp }}
+        run: |
+          sed -i -E "s|<Version>[^<]+</Version>|<Version>${VERSION}</Version>|g; s|<AssemblyVersion>[^<]+</AssemblyVersion>|<AssemblyVersion>${VERSION}</AssemblyVersion>|g; s|<FileVersion>[^<]+</FileVersion>|<FileVersion>${VERSION}</FileVersion>|g" plugin/Jellyfin.Plugin.MergerFin.csproj
+          sed -i -E "s|/MergerFin_[^/]+/|/MergerFin_${VERSION}/|g" plugin/Dockerfile
+          sed -i -E "s|Version=\\\\\"[0-9]+\.[0-9]+\.[0-9]+\\\\\"|Version=\\\\\"${SHORT_VER}\\\\\"|g" plugin/Services/UpstreamClient.cs
+          sed -i -E "s|Plugin-v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-blue|Plugin-v${VERSION}-blue|g" README.md
+          sed -i -E "s|placeholder: e\.g\. [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|placeholder: e.g. ${VERSION}|g" .github/ISSUE_TEMPLATE/bug_report.yml
+          jq --arg ver "$VERSION" --arg ts "$TIMESTAMP" '.version = $ver | .timestamp = $ts' plugin/meta.json > plugin/meta.json.tmp
+          mv plugin/meta.json.tmp plugin/meta.json
+
+      - name: Build plugin DLL via Docker
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker buildx build -f plugin/Dockerfile --target export --output type=local,dest=plugin-export plugin
+          ls -la "plugin-export/MergerFin_${VERSION}"
+
+      - name: Package zip and compute MD5 checksum
+        id: pkg
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist
+          (cd "plugin-export/MergerFin_${VERSION}" && zip -9 "../../dist/mergerfin_${VERSION}.zip" Jellyfin.Plugin.MergerFin.dll meta.json)
+          CHECKSUM="$(md5sum "dist/mergerfin_${VERSION}.zip" | awk '{print $1}')"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "Packaged dist/mergerfin_${VERSION}.zip (MD5: $CHECKSUM)"
+
+      - name: Update manifest.json
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TIMESTAMP: ${{ steps.meta.outputs.timestamp }}
+          CHECKSUM: ${{ steps.pkg.outputs.checksum }}
+          CHANGELOG: ${{ inputs.changelog }}
+        run: |
+          SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/mergerfin_${VERSION}.zip"
+          jq --arg ver "$VERSION" \
+             --arg cl "$CHANGELOG" \
+             --arg url "$SOURCE_URL" \
+             --arg md5 "$CHECKSUM" \
+             --arg ts "$TIMESTAMP" \
+             '.[0].versions = ([{
+               version: $ver,
+               changelog: $cl,
+               targetAbi: "12.4.0.0",
+               sourceUrl: $url,
+               checksum: $md5,
+               timestamp: $ts
+             }] + (.[0].versions | map(select(.version != $ver))))' \
+             manifest.json > manifest.json.tmp
+          mv manifest.json.tmp manifest.json
+
+      - name: Commit and push release metadata to main
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          git config user.name "AL1X0"
+          git config user.email "100716578+AL1X0@users.noreply.github.com"
+          git add manifest.json plugin/meta.json plugin/Jellyfin.Plugin.MergerFin.csproj plugin/Dockerfile plugin/Services/UpstreamClient.cs README.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m "chore(plugin): release v${VERSION}"
+          git push origin HEAD:main
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          CHANGELOG: ${{ inputs.changelog }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "dist/mergerfin_${VERSION}.zip" --clobber
+          else
+            gh release create "$TAG" "dist/mergerfin_${VERSION}.zip" \
+              --title "MergerFin Jellyfin Plugin v${VERSION}" \
+              --notes "$CHANGELOG" \
+              --target "$(git rev-parse HEAD)"
+          fi

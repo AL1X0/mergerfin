@@ -108,27 +108,89 @@ public class CatalogSyncService
 
     private async Task<List<IndexedRemoteSource>> SyncServerItemsAsync(RemoteServerConfig srv, CancellationToken ct)
     {
+        List<RemoteVirtualFolderDto> libraries = [];
+        try
+        {
+            libraries = await _client.FetchVirtualFoldersAsync(srv, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "MergerFin could not list /Library/VirtualFolders on {Server}; falling back to global sync", srv.Name);
+        }
+
+        if (libraries.Count == 0)
+        {
+            return await SyncScopeItemsAsync(srv, parentId: null, remoteLibraryName: string.Empty, explicitTargetFolder: string.Empty, includeSeries: true, seenMediaSourceIds: null, ct).ConfigureAwait(false);
+        }
+
+        var result = new List<IndexedRemoteSource>();
+        var seenMediaSourceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var lib in libraries)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (targetFolder, ignored) = ResolveLibraryTarget(srv, lib);
+            if (ignored)
+            {
+                _logger.LogInformation("MergerFin skipping ignored remote library '{Library}' on {Server}", lib.Name, srv.Name);
+                continue;
+            }
+
+            var includeSeries = !string.Equals(lib.CollectionType, "movies", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                var libSources = await SyncScopeItemsAsync(
+                    srv,
+                    parentId: lib.ItemId,
+                    remoteLibraryName: lib.Name,
+                    explicitTargetFolder: targetFolder,
+                    includeSeries: includeSeries,
+                    seenMediaSourceIds: seenMediaSourceIds,
+                    ct).ConfigureAwait(false);
+                result.AddRange(libSources);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "MergerFin failed syncing remote library '{Library}' on {Server}", lib.Name, srv.Name);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<List<IndexedRemoteSource>> SyncScopeItemsAsync(
+        RemoteServerConfig srv,
+        string? parentId,
+        string remoteLibraryName,
+        string explicitTargetFolder,
+        bool includeSeries,
+        HashSet<string>? seenMediaSourceIds,
+        CancellationToken ct)
+    {
         var result = new List<IndexedRemoteSource>();
 
         // 1. Fetch Series first to map SeriesId -> ProviderIds for episode deduplication.
-        var seriesList = await _client.FetchAllItemsAsync(srv, ["Series"], ct).ConfigureAwait(false);
         var seriesProvidersById = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         var seriesNameById = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var s in seriesList)
+        if (includeSeries)
         {
-            if (s.ProviderIds != null && s.ProviderIds.Count > 0)
+            var seriesList = await _client.FetchAllItemsAsync(srv, ["Series"], ct, parentId).ConfigureAwait(false);
+            foreach (var s in seriesList)
             {
-                seriesProvidersById[s.Id] = new Dictionary<string, string>(s.ProviderIds, StringComparer.OrdinalIgnoreCase);
-            }
+                if (s.ProviderIds != null && s.ProviderIds.Count > 0)
+                {
+                    seriesProvidersById[s.Id] = new Dictionary<string, string>(s.ProviderIds, StringComparer.OrdinalIgnoreCase);
+                }
 
-            if (!string.IsNullOrWhiteSpace(s.Name))
-            {
-                seriesNameById[s.Id] = s.Name;
+                if (!string.IsNullOrWhiteSpace(s.Name))
+                {
+                    seriesNameById[s.Id] = s.Name;
+                }
             }
         }
 
         // 2. Fetch Movies & Episodes with MediaSources + ProviderIds.
-        var mediaItems = await _client.FetchAllItemsAsync(srv, ["Movie", "Episode"], ct).ConfigureAwait(false);
+        var mediaItems = await _client.FetchAllItemsAsync(srv, ["Movie", "Episode"], ct, parentId).ConfigureAwait(false);
         foreach (var item in mediaItems)
         {
             if (item.MediaSources == null || item.MediaSources.Count == 0)
@@ -161,9 +223,18 @@ public class CatalogSyncService
                 }
             }
 
+            var resolvedTargetFolder = !string.IsNullOrWhiteSpace(explicitTargetFolder)
+                ? explicitTargetFolder
+                : (string.Equals(item.Type, "Movie", StringComparison.OrdinalIgnoreCase) ? "Movies" : "Shows");
+
             foreach (var ms in item.MediaSources)
             {
                 if (string.IsNullOrWhiteSpace(ms.Id) || IsRelayedMediaSource(ms))
+                {
+                    continue;
+                }
+
+                if (seenMediaSourceIds != null && !seenMediaSourceIds.Add(ms.Id))
                 {
                     continue;
                 }
@@ -235,12 +306,104 @@ public class CatalogSyncService
                     Size = ms.Size ?? 0,
                     Bitrate = ms.Bitrate ?? 0,
                     RunTimeTicks = ms.RunTimeTicks ?? item.RunTimeTicks ?? 0,
+                    TargetFolder = resolvedTargetFolder,
+                    RemoteLibraryName = remoteLibraryName,
                     Streams = streams
                 });
             }
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Automatically determines the default output subfolder ("Anime", "Movies", "Shows", or "" for mixed per-item routing)
+    /// from a remote Jellyfin library's name and collection type.
+    /// </summary>
+    public static string DetectDefaultTargetFolder(string? libraryName, string? collectionType)
+    {
+        var normalized = NormalizeForMatch(libraryName);
+        if (!string.IsNullOrEmpty(normalized) &&
+            (normalized.Contains("anime", StringComparison.Ordinal) ||
+             normalized.Contains("japanim", StringComparison.Ordinal)))
+        {
+            return "Anime";
+        }
+
+        if (string.Equals(collectionType, "movies", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Movies";
+        }
+
+        if (string.Equals(collectionType, "tvshows", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Shows";
+        }
+
+        return string.Empty;
+    }
+
+    private static (string TargetFolder, bool Ignored) ResolveLibraryTarget(RemoteServerConfig srv, RemoteVirtualFolderDto lib)
+    {
+        var mappings = srv.LibraryMappings;
+        if (mappings != null && mappings.Count > 0)
+        {
+            var match = mappings.FirstOrDefault(m =>
+                !string.IsNullOrWhiteSpace(m.RemoteLibraryId) &&
+                string.Equals(m.RemoteLibraryId.Trim(), lib.ItemId, StringComparison.OrdinalIgnoreCase));
+
+            match ??= mappings.FirstOrDefault(m =>
+                !string.IsNullOrWhiteSpace(m.RemoteLibraryName) &&
+                string.Equals(m.RemoteLibraryName.Trim(), lib.Name, StringComparison.OrdinalIgnoreCase));
+
+            if (match != null)
+            {
+                var target = (match.TargetFolder ?? string.Empty).Trim();
+                if (string.Equals(target, "ignore", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (string.Empty, true);
+                }
+
+                if (!string.IsNullOrWhiteSpace(target) &&
+                    !string.Equals(target, "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (SanitizeFolderSegment(target), false);
+                }
+            }
+        }
+
+        return (DetectDefaultTargetFolder(lib.Name, lib.CollectionType), false);
+    }
+
+    private static string NormalizeForMatch(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        var decomposed = raw.Trim().Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(char.ToLowerInvariant(c));
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string SanitizeFolderSegment(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        var cleaned = SanitizeFileName(raw).Replace("..", string.Empty, StringComparison.Ordinal).Trim();
+        return cleaned;
     }
 
     private static bool IsMergerFinStrmItem(RemoteItemDto item)
@@ -334,6 +497,26 @@ public class CatalogSyncService
         var writtenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var handledCanonicalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // If any server places a canonical item in a specialized library (e.g. "Anime" or custom folder)
+        // while another server leaves it in default "Shows"/"Movies", prefer the specialized folder.
+        var specializedFolderByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var src in allSources.OrderBy(s => s.ServerPriority))
+        {
+            var folder = SanitizeFolderSegment(src.TargetFolder);
+            if (string.IsNullOrWhiteSpace(folder) ||
+                string.Equals(folder, "Movies", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(folder, "Shows", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var k in RemoteCatalogStore.BuildLookupKeys(
+                src.ItemType, src.ProviderIds, src.SeriesProviderIds, src.SeasonNumber, src.EpisodeNumber))
+            {
+                specializedFolderByKey.TryAdd(k, folder);
+            }
+        }
+
         foreach (var src in allSources.OrderBy(s => s.ServerPriority).ThenByDescending(s => s.Bitrate))
         {
             ct.ThrowIfCancellationRequested();
@@ -354,7 +537,17 @@ public class CatalogSyncService
                 continue;
             }
 
-            string? strmPath = BuildStrmFilePath(root, src);
+            string? preferredFolder = null;
+            foreach (var k in keys)
+            {
+                if (specializedFolderByKey.TryGetValue(k, out var sf))
+                {
+                    preferredFolder = sf;
+                    break;
+                }
+            }
+
+            string? strmPath = BuildStrmFilePath(root, src, preferredFolder);
             if (string.IsNullOrWhiteSpace(strmPath))
             {
                 continue;
@@ -383,7 +576,8 @@ public class CatalogSyncService
             }
         }
 
-        // Clean up stale .strm files exclusively inside StrmOutputPath.
+        // Clean up stale .strm files and empty item subfolders exclusively inside StrmOutputPath
+        // (top-level category folders like Movies/, Shows/, Anime/ are preserved).
         try
         {
             foreach (var existing in Directory.EnumerateFiles(root, "*.strm", SearchOption.AllDirectories))
@@ -393,10 +587,40 @@ public class CatalogSyncService
                     File.Delete(existing);
                 }
             }
+
+            CleanupEmptyNestedDirectories(root);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "MergerFin stale .strm cleanup warning in {Path}", root);
+        }
+    }
+
+    private static void CleanupEmptyNestedDirectories(string root)
+    {
+        foreach (var topLevelDir in Directory.EnumerateDirectories(root))
+        {
+            RemoveEmptySubdirectoriesRecursive(topLevelDir, deleteSelf: false);
+        }
+    }
+
+    private static void RemoveEmptySubdirectoriesRecursive(string dirPath, bool deleteSelf)
+    {
+        foreach (var sub in Directory.EnumerateDirectories(dirPath))
+        {
+            RemoveEmptySubdirectoriesRecursive(sub, deleteSelf: true);
+        }
+
+        if (deleteSelf && !Directory.EnumerateFileSystemEntries(dirPath).Any())
+        {
+            try
+            {
+                Directory.Delete(dirPath, recursive: false);
+            }
+            catch
+            {
+                // Ignore transient filesystem locks during cleanup.
+            }
         }
     }
 
@@ -503,8 +727,14 @@ public class CatalogSyncService
         }
     }
 
-    private static string? BuildStrmFilePath(string root, IndexedRemoteSource src)
+    private static string? BuildStrmFilePath(string root, IndexedRemoteSource src, string? preferredFolder = null)
     {
+        var baseFolder = SanitizeFolderSegment(preferredFolder);
+        if (string.IsNullOrWhiteSpace(baseFolder))
+        {
+            baseFolder = SanitizeFolderSegment(src.TargetFolder);
+        }
+
         if (string.Equals(src.ItemType, "Movie", StringComparison.OrdinalIgnoreCase))
         {
             var title = SanitizeFileName(src.Title);
@@ -513,10 +743,11 @@ public class CatalogSyncService
                 return null;
             }
 
+            var category = string.IsNullOrWhiteSpace(baseFolder) ? "Movies" : baseFolder;
             var yearPart = src.ProductionYear is > 1800 ? $" ({src.ProductionYear.Value})" : string.Empty;
             var idTag = BuildProviderTag(src.ProviderIds);
             var folder = $"{title}{yearPart}{idTag}";
-            return Path.Combine(root, "Movies", folder, $"{title}{yearPart}.strm");
+            return Path.Combine(root, category, folder, $"{title}{yearPart}.strm");
         }
 
         if (string.Equals(src.ItemType, "Episode", StringComparison.OrdinalIgnoreCase))
@@ -527,13 +758,14 @@ public class CatalogSyncService
                 return null;
             }
 
+            var category = string.IsNullOrWhiteSpace(baseFolder) ? "Shows" : baseFolder;
             var seasonNum = src.SeasonNumber ?? 1;
             var epNum = src.EpisodeNumber ?? 1;
             var idTag = BuildProviderTag(src.SeriesProviderIds);
             var seriesFolder = $"{series}{idTag}";
             var seasonFolder = string.Format(CultureInfo.InvariantCulture, "Season {0:00}", seasonNum);
             var fileName = string.Format(CultureInfo.InvariantCulture, "{0} S{1:00}E{2:00}.strm", series, seasonNum, epNum);
-            return Path.Combine(root, "Shows", seriesFolder, seasonFolder, fileName);
+            return Path.Combine(root, category, seriesFolder, seasonFolder, fileName);
         }
 
         return null;

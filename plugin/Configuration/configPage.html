@@ -91,6 +91,33 @@
       gap: 12px;
       flex-wrap: wrap;
     }
+    #MergerFinConfigPage .mf-libs-panel {
+      margin-top: 6px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      display: none;
+    }
+    #MergerFinConfigPage .mf-libs-panel.mf-open {
+      display: block;
+    }
+    #MergerFinConfigPage .mf-lib-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    #MergerFinConfigPage .mf-lib-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    #MergerFinConfigPage .mf-lib-custom {
+      width: 145px;
+    }
   </style>
 
   <div data-role="content">
@@ -118,7 +145,7 @@
           <label class="inputLabel inputLabelUnfocused" for="mfStrmPath">Remote-Only .strm Output Directory (optional)</label>
           <input id="mfStrmPath" type="text" is="emby-input" placeholder="/config/mergerfin-strm" />
           <div class="fieldDescription">
-            If set, MergerFin writes lightweight .strm files here for remote movies/episodes. Add Movies/ and Shows/ subfolders to your Jellyfin libraries. Leave blank to only inject versions onto existing local items.
+            If set, MergerFin writes lightweight .strm files here organized into Movies/, Shows/, and Anime/ subfolders (auto-detected from remote library names, or customizable per server via the Libraries button). Add each subfolder to your matching local Jellyfin library. Leave blank to only inject versions onto existing local items.
           </div>
         </div>
         <div class="inputContainer">
@@ -242,6 +269,77 @@
         return k.substring(0, 4) + '...' + k.substring(k.length - 4);
       }
 
+      var KNOWN_TARGETS = { '': true, 'Movies': true, 'Shows': true, 'Anime': true, 'ignore': true };
+
+      function findMappingForLib(srv, lib) {
+        var maps = (srv && srv.LibraryMappings) || [];
+        for (var i = 0; i < maps.length; i++) {
+          if (maps[i].RemoteLibraryId && lib.id && maps[i].RemoteLibraryId.toLowerCase() === lib.id.toLowerCase()) {
+            return maps[i];
+          }
+        }
+        for (var j = 0; j < maps.length; j++) {
+          if (maps[j].RemoteLibraryName && lib.name && maps[j].RemoteLibraryName.toLowerCase() === lib.name.toLowerCase()) {
+            return maps[j];
+          }
+        }
+        return null;
+      }
+
+      function countActiveRules(srv) {
+        var maps = (srv && srv.LibraryMappings) || [];
+        var n = 0;
+        for (var i = 0; i < maps.length; i++) {
+          var t = (maps[i].TargetFolder || '').trim().toLowerCase();
+          if (t && t !== 'auto') n++;
+        }
+        return n;
+      }
+
+      function renderLibrariesPanel(panel, srv, libs) {
+        if (!libs || !libs.length) {
+          panel.innerHTML = '<div style="opacity:0.75;font-size:0.9em;">No video libraries reported by this server.</div>';
+          return;
+        }
+        var html = '<div style="font-size:0.88em;opacity:0.8;margin-bottom:8px;">' +
+          'Choose where each remote library writes .strm files (Auto detects Anime / Movies / Shows automatically, or pick a custom folder / Ignore).' +
+          '</div>';
+        for (var i = 0; i < libs.length; i++) {
+          var lib = libs[i];
+          var existing = findMappingForLib(srv, lib);
+          var rawTarget = existing ? (existing.TargetFolder || '').trim() : '';
+          if (rawTarget.toLowerCase() === 'auto') rawTarget = '';
+
+          var isCustom = rawTarget !== '' && !KNOWN_TARGETS[rawTarget];
+          var selectVal = isCustom ? '__custom__' : rawTarget;
+          var autoLabel = lib.autoTarget ? ('Auto (\u2192 ' + lib.autoTarget + ')') : 'Auto (Movies / Shows)';
+          var typeLabel = lib.collectionType || 'mixed';
+
+          html += '<div class="mf-lib-row" data-lib-id="' + esc(lib.id) + '" data-lib-name="' + esc(lib.name) + '">' +
+            '<div>' +
+              '<strong>' + esc(lib.name) + '</strong>' +
+              '<span style="opacity:0.65;margin-left:8px;font-size:0.85em;">(' + esc(typeLabel) + ')</span>' +
+            '</div>' +
+            '<div class="mf-lib-controls">' +
+              '<select class="mf-inline-select" data-lib-select="' + esc(lib.id) + '">' +
+                '<option value=""' + (selectVal === '' ? ' selected' : '') + '>' + esc(autoLabel) + '</option>' +
+                '<option value="Movies"' + (selectVal === 'Movies' ? ' selected' : '') + '>Movies</option>' +
+                '<option value="Shows"' + (selectVal === 'Shows' ? ' selected' : '') + '>Shows</option>' +
+                '<option value="Anime"' + (selectVal === 'Anime' ? ' selected' : '') + '>Anime</option>' +
+                '<option value="__custom__"' + (selectVal === '__custom__' ? ' selected' : '') + '>Custom folder...</option>' +
+                '<option value="ignore"' + (selectVal === 'ignore' ? ' selected' : '') + '>Ignore (do not sync)</option>' +
+              '</select>' +
+              '<input type="text" class="mf-inline-input mf-lib-custom" data-lib-custom="' + esc(lib.id) + '" placeholder="Folder name" value="' + esc(isCustom ? rawTarget : '') + '" style="' + (isCustom ? '' : 'display:none;') + '" />' +
+            '</div>' +
+          '</div>';
+        }
+        html += '<div class="mf-actions" style="margin-top:10px;">' +
+          '<button type="button" is="emby-button" class="raised button-submit" data-save-libs="' + esc(srv.Id) + '">Save Libraries</button>' +
+          '<span class="mf-msg" style="margin-top:0;" data-libs-msg="' + esc(srv.Id) + '"></span>' +
+        '</div>';
+        panel.innerHTML = html;
+      }
+
       function renderServers(page) {
         var list = page.querySelector('#mfServersList');
         var servers = (currentConfig && currentConfig.Servers) || [];
@@ -254,14 +352,18 @@
           var s = servers[i];
           var key = s.ApiKey || s.AccessToken || '';
           var mode = s.StreamMode || 'proxy';
+          var rulesCount = countActiveRules(s);
+          var rulesBadge = rulesCount > 0 ? ('<span style="opacity:0.7;margin-left:10px;font-size:0.85em;">(' + rulesCount + ' library rule' + (rulesCount > 1 ? 's' : '') + ')</span>') : '';
           html += '<div class="mf-srv-card" data-srv-card="' + esc(s.Id) + '">' +
             '<div class="mf-srv-top">' +
               '<div>' +
                 '<strong style="font-size:1.05em;">' + esc(s.Name) + '</strong>' +
                 '<span style="opacity:0.75;margin-left:8px;">' + esc(s.BaseUrl) + '</span>' +
                 '<span style="opacity:0.6;margin-left:10px;font-size:0.85em;">Key: ' + esc(maskKey(key)) + '</span>' +
+                rulesBadge +
               '</div>' +
               '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                '<button type="button" is="emby-button" class="raised" data-libs-server="' + esc(s.Id) + '">Libraries</button>' +
                 '<button type="button" is="emby-button" class="raised" data-edit-server="' + esc(s.Id) + '">Edit</button>' +
                 '<button type="button" is="emby-button" class="raised" data-del-server="' + esc(s.Id) + '">Remove</button>' +
               '</div>' +
@@ -282,6 +384,7 @@
               '</label>' +
               '<button type="button" is="emby-button" class="raised button-submit" data-save-row="' + esc(s.Id) + '">Save</button>' +
             '</div>' +
+            '<div class="mf-libs-panel" data-libs-panel="' + esc(s.Id) + '"></div>' +
           '</div>';
         }
         list.innerHTML = html;
@@ -424,7 +527,8 @@
               AccessToken: '',
               Priority: priority,
               StreamMode: streamMode,
-              Enabled: true
+              Enabled: true,
+              LibraryMappings: []
             });
           }
 
@@ -438,7 +542,85 @@
         });
       });
 
+      page.querySelector('#mfServersList').addEventListener('change', function (e) {
+        var sel = e.target.closest('[data-lib-select]');
+        if (!sel) return;
+        var row = sel.closest('.mf-lib-row');
+        if (!row) return;
+        var customInput = row.querySelector('[data-lib-custom]');
+        if (customInput) {
+          customInput.style.display = sel.value === '__custom__' ? '' : 'none';
+          if (sel.value === '__custom__') customInput.focus();
+        }
+      });
+
       page.querySelector('#mfServersList').addEventListener('click', function (e) {
+        var libsBtn = e.target.closest('[data-libs-server]');
+        if (libsBtn) {
+          var libSrvId = libsBtn.dataset.libsServer;
+          var libCard = libsBtn.closest('[data-srv-card]');
+          var panel = libCard.querySelector('[data-libs-panel]');
+          if (panel.classList.contains('mf-open')) {
+            panel.classList.remove('mf-open');
+            return;
+          }
+          var targetSrv = null;
+          for (var k = 0; k < currentConfig.Servers.length; k++) {
+            if (currentConfig.Servers[k].Id === libSrvId) {
+              targetSrv = currentConfig.Servers[k];
+              break;
+            }
+          }
+          if (!targetSrv) return;
+          panel.classList.add('mf-open');
+          panel.innerHTML = '<div style="opacity:0.75;font-size:0.9em;">Loading remote libraries...</div>';
+          apiCall('MergerFin/Servers/' + encodeURIComponent(libSrvId) + '/Libraries', 'GET').then(function (libs) {
+            renderLibrariesPanel(panel, targetSrv, libs);
+          }).catch(function () {
+            panel.innerHTML = '<div style="color:#ff8a80;font-size:0.9em;">Failed to load libraries from remote server.</div>';
+          });
+          return;
+        }
+
+        var saveLibsBtn = e.target.closest('[data-save-libs]');
+        if (saveLibsBtn) {
+          var saveSrvId = saveLibsBtn.dataset.saveLibs;
+          var saveCard = saveLibsBtn.closest('[data-srv-card]');
+          var savePanel = saveCard.querySelector('[data-libs-panel]');
+          var rows = savePanel.querySelectorAll('.mf-lib-row');
+          var newMappings = [];
+          for (var r = 0; r < rows.length; r++) {
+            var rowEl = rows[r];
+            var lId = rowEl.dataset.libId || '';
+            var lName = rowEl.dataset.libName || '';
+            var selEl = rowEl.querySelector('[data-lib-select]');
+            var custEl = rowEl.querySelector('[data-lib-custom]');
+            var val = selEl ? selEl.value : '';
+            if (val === '__custom__') {
+              val = custEl ? custEl.value.trim() : '';
+            }
+            if (val) {
+              newMappings.push({
+                RemoteLibraryId: lId,
+                RemoteLibraryName: lName,
+                TargetFolder: val
+              });
+            }
+          }
+          for (var m = 0; m < currentConfig.Servers.length; m++) {
+            if (currentConfig.Servers[m].Id === saveSrvId) {
+              currentConfig.Servers[m].LibraryMappings = newMappings;
+              break;
+            }
+          }
+          var libsMsg = savePanel.querySelector('[data-libs-msg]');
+          if (libsMsg) libsMsg.textContent = 'Saving...';
+          saveConfig().then(function () {
+            if (libsMsg) libsMsg.textContent = 'Saved! Click "Sync Now" to apply.';
+          });
+          return;
+        }
+
         var saveBtn = e.target.closest('[data-save-row]');
         if (saveBtn) {
           var srvId = saveBtn.dataset.saveRow;
