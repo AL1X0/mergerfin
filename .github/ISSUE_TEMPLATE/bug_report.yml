@@ -12,7 +12,7 @@ body:
     attributes:
       label: MergerFin Plugin Version
       description: Installed plugin version shown in Dashboard → Plugins
-      placeholder: e.g. 0.1.15.0
+      placeholder: e.g. 0.1.16.0
     validations:
       required: true
   - type: input

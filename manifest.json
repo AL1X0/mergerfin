@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.16.0",
+        "changelog": "Make server origin immediately visible on every Movie and Series page across all Jellyfin clients (including jellyfin-web, which hides Jellyfin Tags on detail pages): inject the source server banner live into Taglines[0] right above the synopsis (e.g. 'Source: BelkaFlix') and inject server Tags live on item DTOs so library scans/metadata refreshes never hide them, plus improved tag sync logging.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.16/mergerfin_0.1.16.0.zip",
+        "checksum": "ac55fae87b0d5cd14d4dd5f14510fc73",
+        "timestamp": "2026-11-24T13:50:01Z"
+      },
+      {
         "version": "0.1.15.0",
         "changelog": "Add native Jellyfin server-origin Tags on movies and series (configurable prefix, optional Local media tag, automatic stale-tag cleanup without touching user tags) so you can see and filter content by source server, and populate [ServerName] resolution/codec labels on .strm MediaSources in PlaybackInfo and item DTOs.",
         "targetAbi": "12.4.0.0",
