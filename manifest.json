@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.14.0",
+        "changelog": "Separate remote Anime, Movies, and Shows libraries automatically via GET /Library/VirtualFolders (libraries matching anime/animé/japanim route to Anime/, movies to Movies/, series to Shows/), add per-server Libraries mapping UI (Auto, Movies, Shows, Anime, custom folder, or Ignore), prefer specialized folders across federated servers, and clean up empty subfolders when items move between categories.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.14/mergerfin_0.1.14.0.zip",
+        "checksum": "9fe59221e81c81b31f2c3ca6d7e4c977",
+        "timestamp": "2026-11-24T09:35:51Z"
+      },
+      {
         "version": "0.1.13.0",
         "changelog": "Fix playback on third-party Jellyfin clients (OptiFin, Wholphin, Jellyfin Android TV, Infuse, Swiftfin, Findroid): restore SupportsDirectPlay=true when undoing ForceRemoteSourceTranscoding Static=true overrides (instead of leaving SupportsDirectPlay=false with TranscodingUrl=null), sanitize client-facing DTOs to Protocol=File / IsRemote=false / virtual Path so clients never filter out HTTP/remote sources or connect to loopback 127.0.0.1, strip forced allowVideoStreamCopy=false / allowAudioStreamCopy=false on HLS remuxes, backfill real metadata/MediaStreams on BaseItemDto (skipped for MergerFin mesh sync callers), and copy full MediaStream codec/HDR metadata on multi-version mf_* sources.",
         "targetAbi": "12.4.0.0",
