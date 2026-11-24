@@ -97,7 +97,7 @@ public class CatalogSyncService
                 await BackfillStrmRuntimesAsync(cfg.StrmOutputPath, ct).ConfigureAwait(false);
             }
 
-            if (cfg.TagItemsWithServerName)
+            if (cfg.TagItemsWithServerName || cfg.ShowServerInTagline)
             {
                 await SyncServerOriginTagsAsync(cfg, ct).ConfigureAwait(false);
             }
@@ -784,7 +784,7 @@ public class CatalogSyncService
             }
             else
             {
-                var strmServer = ResolveServerNameFromStrmPath(ep.Path);
+                var strmServer = ResolveServerNameFromStrmPath(_store, ep.Path);
                 if (!string.IsNullOrWhiteSpace(strmServer))
                 {
                     if (!seriesStrmFallbackServers.TryGetValue(sid, out var set))
@@ -804,7 +804,10 @@ public class CatalogSyncService
             Recursive = true
         });
 
+        var originCache = new Dictionary<Guid, (bool HasLocalFile, List<string> RemoteServers)>(items.Count);
         var updated = 0;
+        var matchedCount = 0;
+        var failedCount = 0;
         foreach (var item in items)
         {
             ct.ThrowIfCancellationRequested();
@@ -818,7 +821,7 @@ public class CatalogSyncService
                 remoteServers = _store.FindServerNamesForMovie(item.ProviderIds);
                 if (remoteServers.Count == 0 && IsPathInsideStrmRoot(item.Path, fullStrmRoot))
                 {
-                    var fallback = ResolveServerNameFromStrmPath(item.Path);
+                    var fallback = ResolveServerNameFromStrmPath(_store, item.Path);
                     if (!string.IsNullOrWhiteSpace(fallback))
                     {
                         remoteServers = [fallback];
@@ -835,6 +838,17 @@ public class CatalogSyncService
                 }
             }
             else
+            {
+                continue;
+            }
+
+            originCache[item.Id] = (hasLocalFile, remoteServers);
+            if (remoteServers.Count > 0)
+            {
+                matchedCount++;
+            }
+
+            if (!cfg.TagItemsWithServerName)
             {
                 continue;
             }
@@ -903,17 +917,24 @@ public class CatalogSyncService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "MergerFin failed updating server origin tags for {Name}", item.Name);
+                failedCount++;
+                if (failedCount <= 5)
+                {
+                    _logger.LogWarning(ex, "MergerFin failed updating server origin tags for {Name}", item.Name);
+                }
             }
         }
 
-        if (updated > 0)
-        {
-            _logger.LogInformation("MergerFin updated server origin tags on {Count} movies/series", updated);
-        }
+        _store.ReplaceItemOriginCache(originCache);
+        _logger.LogInformation(
+            "MergerFin server-origin sync complete: scanned {Total} movies/series, matched {Matched} remote items, updated tags on {Updated} (errors: {Errors})",
+            items.Count,
+            matchedCount,
+            updated,
+            failedCount);
     }
 
-    private static bool IsPathInsideStrmRoot(string? itemPath, string fullStrmRoot)
+    internal static bool IsPathInsideStrmRoot(string? itemPath, string fullStrmRoot)
     {
         if (string.IsNullOrWhiteSpace(itemPath))
         {
@@ -939,7 +960,7 @@ public class CatalogSyncService
                itemPath.Contains("mergerfin", StringComparison.OrdinalIgnoreCase);
     }
 
-    private string? ResolveServerNameFromStrmPath(string? strmPath)
+    internal static string? ResolveServerNameFromStrmPath(RemoteCatalogStore store, string? strmPath)
     {
         if (string.IsNullOrWhiteSpace(strmPath) ||
             !strmPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) ||
@@ -961,7 +982,7 @@ public class CatalogSyncService
             var tail = content[(idx + marker.Length)..];
             var qIdx = tail.IndexOf('?');
             var sourceId = (qIdx >= 0 ? tail[..qIdx] : tail).Trim();
-            return _store.GetBySourceId(sourceId)?.ServerName;
+            return store.GetBySourceId(sourceId)?.ServerName;
         }
         catch
         {

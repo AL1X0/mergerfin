@@ -24,6 +24,7 @@ public class RemoteCatalogStore
     private Dictionary<string, IndexedRemoteSource> _bySourceId = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<IndexedRemoteSource>> _byLookupKey = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<IndexedRemoteSource>> _bySeriesKey = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<Guid, (bool HasLocalFile, List<string> RemoteServers)> _itemOriginById = new();
     private DateTime _lastSyncUtc;
     private string _lastError = string.Empty;
 
@@ -181,6 +182,28 @@ public class RemoteCatalogStore
     {
         var matches = FindMatches("Movie", providerIds);
         return ExtractDistinctServerNames(matches);
+    }
+
+    public void ReplaceItemOriginCache(Dictionary<Guid, (bool HasLocalFile, List<string> RemoteServers)> originMap)
+    {
+        lock (_lock)
+        {
+            _itemOriginById = originMap;
+        }
+    }
+
+    public bool TryGetCachedItemOrigin(Guid itemId, out (bool HasLocalFile, List<string> RemoteServers) origin)
+    {
+        if (itemId == Guid.Empty)
+        {
+            origin = default;
+            return false;
+        }
+
+        lock (_lock)
+        {
+            return _itemOriginById.TryGetValue(itemId, out origin);
+        }
     }
 
     public List<string> FindServerNamesForSeries(IDictionary<string, string>? seriesProviderIds)

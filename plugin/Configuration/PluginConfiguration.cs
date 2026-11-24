@@ -49,6 +49,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool TagItemsWithServerName { get; set; } = true;
 
     /// <summary>
+    /// Display the source server banner visibly on Movie and Series detail pages via Taglines[0]
+    /// (since jellyfin-web hides Jellyfin Tags on item detail pages).
+    /// </summary>
+    public bool ShowServerInTagline { get; set; } = true;
+
+    /// <summary>
     /// Optional prefix prepended to server origin tags (e.g. "Source: " -> "Source: BelkaFlix").
     /// Leave empty to use the server display name directly.
     /// </summary>

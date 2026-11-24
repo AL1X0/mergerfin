@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -8,6 +9,9 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.MergerFin.Models;
 using Jellyfin.Plugin.MergerFin.Providers;
 using Jellyfin.Plugin.MergerFin.Services;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -45,10 +49,12 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
     private static readonly ConcurrentDictionary<Type, (PropertyInfo? VideoCopy, PropertyInfo? AudioCopy)> DtoPropCache = new();
 
     private readonly RemoteCatalogStore _store;
+    private readonly ILibraryManager _libraryManager;
 
-    public PlaybackInfoFixFilter(RemoteCatalogStore store)
+    public PlaybackInfoFixFilter(RemoteCatalogStore store, ILibraryManager libraryManager)
     {
         _store = store;
+        _libraryManager = libraryManager;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -90,20 +96,22 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
             {
                 if (value is BaseItemDto itemDto)
                 {
-                    FixItemDto(itemDto);
+                    FixItemDto(itemDto, isDetailResponse: true);
                 }
                 else if (value is QueryResult<BaseItemDto> queryResult && queryResult.Items != null)
                 {
+                    var isSingle = queryResult.Items.Count == 1;
                     foreach (var item in queryResult.Items)
                     {
-                        FixItemDto(item);
+                        FixItemDto(item, isDetailResponse: isSingle);
                     }
                 }
                 else if (value is IReadOnlyList<BaseItemDto> itemList)
                 {
+                    var isSingle = itemList.Count == 1;
                     for (var i = 0; i < itemList.Count; i++)
                     {
-                        FixItemDto(itemList[i]);
+                        FixItemDto(itemList[i], isDetailResponse: isSingle);
                     }
                 }
             }
@@ -152,8 +160,10 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
         SanitizeClientTransportFields(ms, sourceId, container);
     }
 
-    private void FixItemDto(BaseItemDto itemDto)
+    private void FixItemDto(BaseItemDto itemDto, bool isDetailResponse)
     {
+        ApplyServerOriginPresentation(itemDto, isDetailResponse);
+
         if (itemDto.MediaSources == null || itemDto.MediaSources.Length == 0)
         {
             return;
@@ -212,6 +222,141 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
             if (itemDto.IsHD != true && videoStream.Height is >= 720)
             {
                 itemDto.IsHD = true;
+            }
+        }
+    }
+
+    private void ApplyServerOriginPresentation(BaseItemDto itemDto, bool isDetailResponse)
+    {
+        var cfg = Plugin.Instance?.Configuration;
+        if (cfg == null || (!cfg.TagItemsWithServerName && !cfg.ShowServerInTagline))
+        {
+            return;
+        }
+
+        if (itemDto.Type != BaseItemKind.Movie && itemDto.Type != BaseItemKind.Series)
+        {
+            return;
+        }
+
+        var fullStrmRoot = !string.IsNullOrWhiteSpace(cfg.StrmOutputPath)
+            ? Path.GetFullPath(cfg.StrmOutputPath.Trim()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar
+            : string.Empty;
+
+        var hasLocalFile = false;
+        List<string> remoteServers;
+
+        if (_store.TryGetCachedItemOrigin(itemDto.Id, out var cached))
+        {
+            hasLocalFile = cached.HasLocalFile;
+            remoteServers = cached.RemoteServers;
+        }
+        else
+        {
+            if (itemDto.Type == BaseItemKind.Movie)
+            {
+                hasLocalFile = !string.IsNullOrWhiteSpace(itemDto.Path) && !CatalogSyncService.IsPathInsideStrmRoot(itemDto.Path, fullStrmRoot);
+                remoteServers = _store.FindServerNamesForMovie(itemDto.ProviderIds);
+            }
+            else
+            {
+                remoteServers = _store.FindServerNamesForSeries(itemDto.ProviderIds);
+            }
+
+            if (remoteServers.Count == 0 && isDetailResponse && itemDto.Id != Guid.Empty)
+            {
+                var dbItem = _libraryManager.GetItemById(itemDto.Id);
+                if (dbItem is Movie m)
+                {
+                    hasLocalFile = !string.IsNullOrWhiteSpace(m.Path) && !CatalogSyncService.IsPathInsideStrmRoot(m.Path, fullStrmRoot);
+                    remoteServers = _store.FindServerNamesForMovie(m.ProviderIds);
+                    if (remoteServers.Count == 0 && CatalogSyncService.IsPathInsideStrmRoot(m.Path, fullStrmRoot))
+                    {
+                        var fallback = CatalogSyncService.ResolveServerNameFromStrmPath(_store, m.Path);
+                        if (!string.IsNullOrWhiteSpace(fallback))
+                        {
+                            remoteServers = [fallback];
+                        }
+                    }
+                }
+                else if (dbItem is Series s)
+                {
+                    remoteServers = _store.FindServerNamesForSeries(s.ProviderIds);
+                }
+            }
+        }
+
+        var localTagName = (cfg.LocalServerTag ?? string.Empty).Trim();
+        var rawNames = new List<string>();
+        var rawSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (hasLocalFile && !string.IsNullOrWhiteSpace(localTagName) && rawSeen.Add(localTagName))
+        {
+            rawNames.Add(localTagName);
+        }
+
+        foreach (var srvName in remoteServers)
+        {
+            var trimmed = (srvName ?? string.Empty).Trim();
+            if (!string.IsNullOrEmpty(trimmed) && rawSeen.Add(trimmed))
+            {
+                rawNames.Add(trimmed);
+            }
+        }
+
+        if (rawNames.Count == 0)
+        {
+            return;
+        }
+
+        var prefix = cfg.ServerTagPrefix ?? string.Empty;
+
+        if (cfg.TagItemsWithServerName)
+        {
+            var existingTags = itemDto.Tags ?? [];
+            var merged = new List<string>(existingTags.Length + rawNames.Count);
+            var tagSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var t in existingTags)
+            {
+                if (!string.IsNullOrWhiteSpace(t) && tagSeen.Add(t))
+                {
+                    merged.Add(t);
+                }
+            }
+
+            var addedAny = false;
+            foreach (var name in rawNames)
+            {
+                var formatted = string.IsNullOrEmpty(prefix) ? name : prefix + name;
+                if (tagSeen.Add(formatted))
+                {
+                    merged.Add(formatted);
+                    addedAny = true;
+                }
+            }
+
+            if (addedAny)
+            {
+                itemDto.Tags = merged.ToArray();
+            }
+        }
+
+        if (cfg.ShowServerInTagline && isDetailResponse)
+        {
+            var joined = string.Join(" \u2022 ", rawNames);
+            var banner = string.IsNullOrEmpty(prefix) ? joined : prefix + joined;
+
+            if (itemDto.Taglines == null || itemDto.Taglines.Length == 0)
+            {
+                itemDto.Taglines = [banner];
+            }
+            else if (!itemDto.Taglines[0].Contains(banner, StringComparison.OrdinalIgnoreCase))
+            {
+                var updated = new string[itemDto.Taglines.Length];
+                Array.Copy(itemDto.Taglines, updated, itemDto.Taglines.Length);
+                updated[0] = $"[{banner}] {itemDto.Taglines[0]}";
+                itemDto.Taglines = updated;
             }
         }
     }

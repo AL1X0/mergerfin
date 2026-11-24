@@ -174,7 +174,13 @@
         <div class="checkboxContainer checkboxContainer-withDescription">
           <label class="emby-checkbox-label">
             <input id="mfTagWithServerName" type="checkbox" is="emby-checkbox" />
-            <span>Tag movies &amp; series with their source server name(s) in Jellyfin Tags</span>
+            <span>Tag movies &amp; series with their source server name(s) in Jellyfin Tags (enables Filter &rarr; Tags)</span>
+          </label>
+        </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label class="emby-checkbox-label">
+            <input id="mfShowServerInTagline" type="checkbox" is="emby-checkbox" />
+            <span>Show source server banner on Movie &amp; Series pages (above synopsis, visible in all Jellyfin clients)</span>
           </label>
         </div>
         <div class="mf-grid-2" style="margin-top:8px;">
@@ -455,6 +461,7 @@
           page.querySelector('#mfSkipLocalDuplicates').checked = currentConfig.SkipLocalDuplicatesInStrm !== false;
           page.querySelector('#mfSyncWatchState').checked = currentConfig.SyncWatchStateToUpstreams !== false;
           page.querySelector('#mfTagWithServerName').checked = currentConfig.TagItemsWithServerName !== false;
+          page.querySelector('#mfShowServerInTagline').checked = currentConfig.ShowServerInTagline !== false;
           page.querySelector('#mfServerTagPrefix').value = currentConfig.ServerTagPrefix != null ? currentConfig.ServerTagPrefix : 'Source: ';
           page.querySelector('#mfLocalServerTag').value = currentConfig.LocalServerTag || '';
 
@@ -479,6 +486,7 @@
         currentConfig.SkipLocalDuplicatesInStrm = page.querySelector('#mfSkipLocalDuplicates').checked;
         currentConfig.SyncWatchStateToUpstreams = page.querySelector('#mfSyncWatchState').checked;
         currentConfig.TagItemsWithServerName = page.querySelector('#mfTagWithServerName').checked;
+        currentConfig.ShowServerInTagline = page.querySelector('#mfShowServerInTagline').checked;
         currentConfig.ServerTagPrefix = page.querySelector('#mfServerTagPrefix').value;
         currentConfig.LocalServerTag = page.querySelector('#mfLocalServerTag').value.trim();
         saveConfig();

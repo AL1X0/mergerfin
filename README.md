@@ -86,7 +86,8 @@ On your local Jellyfin server, open **Dashboard** → **Plugins** → **MergerFi
 | **Inject remote versions onto matching local movies & episodes** | Enabled | Attaches matching remote sources to local items via `IMediaSourceProvider`. |
 | **Skip `.strm` files for items already present locally** | Enabled | Prevents duplicate `.strm` entries when merging into existing libraries. Disable this if you use a dedicated standalone library for all remote content. |
 | **Sync local playback, played & favorite state back to remote servers** | Enabled | Syncs live playback progress, resume position, played status, and favorites to remote users matched by username. |
-| **Tag movies & series with their source server name(s)** | Enabled | Adds native Jellyfin Tags (e.g. `Source: BelkaFlix`) to movies and series so you can see and filter by origin server. |
+| **Tag movies & series with their source server name(s)** | Enabled | Adds native Jellyfin Tags (e.g. `Source: BelkaFlix`) to movies and series so you can filter libraries by origin server. |
+| **Show source server banner on Movie & Series pages** | Enabled | Displays the source server banner (`Source: BelkaFlix`) right above the synopsis on Movie and Series pages across all Jellyfin clients (including Jellyfin Web, which does not render Jellyfin Tags on detail pages). |
 | **Server Tag Prefix** | `Source: ` | Optional prefix prepended to server origin tags. Leave blank to tag with the bare server name. |
 | **Local Media Tag** | *(empty)* | Optional tag added to movies and series also stored locally (e.g. `Local`). Leave blank to only tag remote servers. |
 
