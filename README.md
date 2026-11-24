@@ -1,7 +1,7 @@
 # MergerFin
 
 [![Jellyfin](https://img.shields.io/badge/Jellyfin-12.4%2B-00A4DC?logo=jellyfin&logoColor=white)](https://jellyfin.org)
-[![Plugin Version](https://img.shields.io/badge/Plugin-v0.1.14.0-blue)](manifest.json)
+[![Plugin Version](https://img.shields.io/badge/Plugin-v0.1.15.0-blue)](manifest.json)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 **MergerFin** is an open-source native Jellyfin plugin that federates one or more remote Jellyfin servers directly into your existing Jellyfin server.

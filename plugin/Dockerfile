@@ -9,5 +9,5 @@ COPY . .
 RUN dotnet build Jellyfin.Plugin.MergerFin.csproj -c Release -o /out /p:JellyfinRefDir=/jellyfin-refs
 
 FROM scratch AS export
-COPY --from=builder /out/Jellyfin.Plugin.MergerFin.dll /MergerFin_0.1.14.0/Jellyfin.Plugin.MergerFin.dll
-COPY meta.json /MergerFin_0.1.14.0/meta.json
+COPY --from=builder /out/Jellyfin.Plugin.MergerFin.dll /MergerFin_0.1.15.0/Jellyfin.Plugin.MergerFin.dll
+COPY meta.json /MergerFin_0.1.15.0/meta.json

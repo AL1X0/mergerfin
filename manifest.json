@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.15.0",
+        "changelog": "Add native Jellyfin server-origin Tags on movies and series (configurable prefix, optional Local media tag, automatic stale-tag cleanup without touching user tags) so you can see and filter content by source server, and populate [ServerName] resolution/codec labels on .strm MediaSources in PlaybackInfo and item DTOs.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.15/mergerfin_0.1.15.0.zip",
+        "checksum": "f2503e660ccd83ce95bde2246816cd6b",
+        "timestamp": "2026-11-24T13:00:31Z"
+      },
+      {
         "version": "0.1.14.0",
         "changelog": "Separate remote Anime, Movies, and Shows libraries automatically via GET /Library/VirtualFolders (libraries matching anime/animé/japanim route to Anime/, movies to Movies/, series to Shows/), add per-server Libraries mapping UI (Auto, Movies, Shows, Anime, custom folder, or Ignore), prefer specialized folders across federated servers, and clean up empty subfolders when items move between categories.",
         "targetAbi": "12.4.0.0",
