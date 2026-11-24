@@ -42,6 +42,23 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Set to false if you use a dedicated separate library (e.g. "Films SYNC") and want all remote items listed there.
     /// </summary>
     public bool SkipLocalDuplicatesInStrm { get; set; } = true;
+
+    /// <summary>
+    /// Automatically tag local movies and series with the display name(s) of the remote server(s) providing them.
+    /// </summary>
+    public bool TagItemsWithServerName { get; set; } = true;
+
+    /// <summary>
+    /// Optional prefix prepended to server origin tags (e.g. "Source: " -> "Source: BelkaFlix").
+    /// Leave empty to use the server display name directly.
+    /// </summary>
+    public string ServerTagPrefix { get; set; } = "Source: ";
+
+    /// <summary>
+    /// Optional tag added to movies and series that also exist as real local files (non-.strm),
+    /// e.g. "Local" or your own server name. Leave empty to only tag remote server sources.
+    /// </summary>
+    public string LocalServerTag { get; set; } = string.Empty;
 }
 
 public class RemoteServerConfig

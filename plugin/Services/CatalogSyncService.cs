@@ -97,6 +97,11 @@ public class CatalogSyncService
                 await BackfillStrmRuntimesAsync(cfg.StrmOutputPath, ct).ConfigureAwait(false);
             }
 
+            if (cfg.TagItemsWithServerName)
+            {
+                await SyncServerOriginTagsAsync(cfg, ct).ConfigureAwait(false);
+            }
+
             progress?.Report(100.0);
         }
         finally
@@ -725,6 +730,282 @@ public class CatalogSyncService
         {
             _logger.LogInformation("MergerFin backfilled RunTimeTicks on {Count} remote .strm items", updated);
         }
+    }
+
+    private async Task SyncServerOriginTagsAsync(PluginConfiguration cfg, CancellationToken ct)
+    {
+        var prefix = cfg.ServerTagPrefix ?? string.Empty;
+        var localTagName = (cfg.LocalServerTag ?? string.Empty).Trim();
+        var fullStrmRoot = !string.IsNullOrWhiteSpace(cfg.StrmOutputPath)
+            ? Path.GetFullPath(cfg.StrmOutputPath.Trim()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar
+            : string.Empty;
+
+        // Collect all known MergerFin-managed server names so renamed/removed sources are cleaned up safely
+        // without touching any unrelated user or metadata tags.
+        var knownManagedRawNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in cfg.Servers)
+        {
+            if (!string.IsNullOrWhiteSpace(s.Name))
+            {
+                knownManagedRawNames.Add(s.Name.Trim());
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(localTagName))
+        {
+            knownManagedRawNames.Add(localTagName);
+        }
+
+        // Single pass over episodes to detect which series have real local files (and .strm fallback server names).
+        var seriesWithLocalFiles = new HashSet<Guid>();
+        var seriesStrmFallbackServers = new Dictionary<Guid, HashSet<string>>();
+        var episodes = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Episode],
+            Recursive = true
+        });
+
+        foreach (var item in episodes)
+        {
+            if (item is not Episode ep)
+            {
+                continue;
+            }
+
+            var sid = ep.Series?.Id ?? Guid.Empty;
+            if (sid == Guid.Empty)
+            {
+                continue;
+            }
+
+            if (!IsPathInsideStrmRoot(ep.Path, fullStrmRoot))
+            {
+                seriesWithLocalFiles.Add(sid);
+            }
+            else
+            {
+                var strmServer = ResolveServerNameFromStrmPath(ep.Path);
+                if (!string.IsNullOrWhiteSpace(strmServer))
+                {
+                    if (!seriesStrmFallbackServers.TryGetValue(sid, out var set))
+                    {
+                        set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        seriesStrmFallbackServers[sid] = set;
+                    }
+
+                    set.Add(strmServer);
+                }
+            }
+        }
+
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series],
+            Recursive = true
+        });
+
+        var updated = 0;
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            List<string> remoteServers;
+            bool hasLocalFile;
+
+            if (item is Movie)
+            {
+                hasLocalFile = !string.IsNullOrWhiteSpace(item.Path) && !IsPathInsideStrmRoot(item.Path, fullStrmRoot);
+                remoteServers = _store.FindServerNamesForMovie(item.ProviderIds);
+                if (remoteServers.Count == 0 && IsPathInsideStrmRoot(item.Path, fullStrmRoot))
+                {
+                    var fallback = ResolveServerNameFromStrmPath(item.Path);
+                    if (!string.IsNullOrWhiteSpace(fallback))
+                    {
+                        remoteServers = [fallback];
+                    }
+                }
+            }
+            else if (item is Series)
+            {
+                hasLocalFile = seriesWithLocalFiles.Contains(item.Id);
+                remoteServers = _store.FindServerNamesForSeries(item.ProviderIds);
+                if (remoteServers.Count == 0 && seriesStrmFallbackServers.TryGetValue(item.Id, out var fallbackSet))
+                {
+                    remoteServers = fallbackSet.ToList();
+                }
+            }
+            else
+            {
+                continue;
+            }
+
+            var desiredManagedTags = new List<string>();
+            var desiredSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (hasLocalFile && !string.IsNullOrWhiteSpace(localTagName))
+            {
+                var formattedLocal = FormatServerTag(prefix, localTagName);
+                if (desiredSeen.Add(formattedLocal))
+                {
+                    desiredManagedTags.Add(formattedLocal);
+                }
+            }
+
+            foreach (var srvName in remoteServers)
+            {
+                var formatted = FormatServerTag(prefix, srvName);
+                if (desiredSeen.Add(formatted))
+                {
+                    desiredManagedTags.Add(formatted);
+                }
+            }
+
+            var existingTags = item.Tags ?? [];
+            var nextTags = new List<string>(existingTags.Length + desiredManagedTags.Count);
+            var nextSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var tag in existingTags)
+            {
+                if (string.IsNullOrWhiteSpace(tag))
+                {
+                    continue;
+                }
+
+                if (IsMergerFinManagedTag(tag, prefix, knownManagedRawNames))
+                {
+                    continue;
+                }
+
+                if (nextSeen.Add(tag))
+                {
+                    nextTags.Add(tag);
+                }
+            }
+
+            foreach (var desired in desiredManagedTags)
+            {
+                if (nextSeen.Add(desired))
+                {
+                    nextTags.Add(desired);
+                }
+            }
+
+            if (TagsAreEqual(existingTags, nextTags))
+            {
+                continue;
+            }
+
+            item.Tags = nextTags.ToArray();
+            try
+            {
+                await _libraryManager.UpdateItemAsync(item, item.GetParent(), ItemUpdateType.MetadataEdit, ct).ConfigureAwait(false);
+                updated++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "MergerFin failed updating server origin tags for {Name}", item.Name);
+            }
+        }
+
+        if (updated > 0)
+        {
+            _logger.LogInformation("MergerFin updated server origin tags on {Count} movies/series", updated);
+        }
+    }
+
+    private static bool IsPathInsideStrmRoot(string? itemPath, string fullStrmRoot)
+    {
+        if (string.IsNullOrWhiteSpace(itemPath))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(fullStrmRoot))
+        {
+            try
+            {
+                if (Path.GetFullPath(itemPath).StartsWith(fullStrmRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Fall back to extension check below.
+            }
+        }
+
+        return itemPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) &&
+               itemPath.Contains("mergerfin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string? ResolveServerNameFromStrmPath(string? strmPath)
+    {
+        if (string.IsNullOrWhiteSpace(strmPath) ||
+            !strmPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(strmPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var content = File.ReadAllText(strmPath).Trim();
+            const string marker = "/MergerFin/Stream/";
+            var idx = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+            {
+                return null;
+            }
+
+            var tail = content[(idx + marker.Length)..];
+            var qIdx = tail.IndexOf('?');
+            var sourceId = (qIdx >= 0 ? tail[..qIdx] : tail).Trim();
+            return _store.GetBySourceId(sourceId)?.ServerName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string FormatServerTag(string prefix, string rawName)
+    {
+        return string.IsNullOrEmpty(prefix) ? rawName.Trim() : prefix + rawName.Trim();
+    }
+
+    private static bool IsMergerFinManagedTag(string tag, string prefix, HashSet<string> knownManagedRawNames)
+    {
+        var trimmed = tag.Trim();
+        if (!string.IsNullOrEmpty(prefix) && trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (knownManagedRawNames.Contains(trimmed))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TagsAreEqual(string[] existing, List<string> next)
+    {
+        if (existing.Length != next.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < existing.Length; i++)
+        {
+            if (!string.Equals(existing[i], next[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string? BuildStrmFilePath(string root, IndexedRemoteSource src, string? preferredFolder = null)

@@ -23,6 +23,7 @@ public class RemoteCatalogStore
 
     private Dictionary<string, IndexedRemoteSource> _bySourceId = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, List<IndexedRemoteSource>> _byLookupKey = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, List<IndexedRemoteSource>> _bySeriesKey = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastSyncUtc;
     private string _lastError = string.Empty;
 
@@ -96,10 +97,24 @@ public class RemoteCatalogStore
         }
     }
 
+    public static IEnumerable<string> BuildSeriesLookupKeys(IDictionary<string, string>? seriesProviderIds)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (seriesProviderIds != null)
+        {
+            AddProviderKey(keys, "series:tmdb:", seriesProviderIds, "Tmdb");
+            AddProviderKey(keys, "series:tvdb:", seriesProviderIds, "Tvdb");
+            AddProviderKey(keys, "series:imdb:", seriesProviderIds, "Imdb");
+        }
+
+        return keys;
+    }
+
     public void ReplaceAll(List<IndexedRemoteSource> sources, string lastError = "")
     {
         var byId = new Dictionary<string, IndexedRemoteSource>(StringComparer.OrdinalIgnoreCase);
         var byKey = new Dictionary<string, List<IndexedRemoteSource>>(StringComparer.OrdinalIgnoreCase);
+        var bySeries = new Dictionary<string, List<IndexedRemoteSource>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var s in sources)
         {
@@ -114,6 +129,20 @@ public class RemoteCatalogStore
 
                 list.Add(s);
             }
+
+            if (string.Equals(s.ItemType, "Episode", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var sk in BuildSeriesLookupKeys(s.SeriesProviderIds))
+                {
+                    if (!bySeries.TryGetValue(sk, out var list))
+                    {
+                        list = [];
+                        bySeries[sk] = list;
+                    }
+
+                    list.Add(s);
+                }
+            }
         }
 
         foreach (var list in byKey.Values)
@@ -125,11 +154,17 @@ public class RemoteCatalogStore
             });
         }
 
+        foreach (var list in bySeries.Values)
+        {
+            list.Sort((a, b) => a.ServerPriority.CompareTo(b.ServerPriority));
+        }
+
         var now = DateTime.UtcNow;
         lock (_lock)
         {
             _bySourceId = byId;
             _byLookupKey = byKey;
+            _bySeriesKey = bySeries;
             _lastSyncUtc = now;
             _lastError = lastError;
         }
@@ -140,6 +175,55 @@ public class RemoteCatalogStore
             LastError = lastError,
             Sources = sources
         });
+    }
+
+    public List<string> FindServerNamesForMovie(IDictionary<string, string>? providerIds)
+    {
+        var matches = FindMatches("Movie", providerIds);
+        return ExtractDistinctServerNames(matches);
+    }
+
+    public List<string> FindServerNamesForSeries(IDictionary<string, string>? seriesProviderIds)
+    {
+        var keys = BuildSeriesLookupKeys(seriesProviderIds);
+        var matched = new List<IndexedRemoteSource>();
+        var seenServerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        lock (_lock)
+        {
+            foreach (var k in keys)
+            {
+                if (_bySeriesKey.TryGetValue(k, out var list))
+                {
+                    foreach (var s in list)
+                    {
+                        if (seenServerIds.Add(s.ServerId))
+                        {
+                            matched.Add(s);
+                        }
+                    }
+                }
+            }
+        }
+
+        matched.Sort((a, b) => a.ServerPriority.CompareTo(b.ServerPriority));
+        return ExtractDistinctServerNames(matched);
+    }
+
+    private static List<string> ExtractDistinctServerNames(List<IndexedRemoteSource> sources)
+    {
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in sources)
+        {
+            var name = (s.ServerName ?? string.Empty).Trim();
+            if (!string.IsNullOrEmpty(name) && seen.Add(name))
+            {
+                names.Add(name);
+            }
+        }
+
+        return names;
     }
 
     public IndexedRemoteSource? GetBySourceId(string sourceId)

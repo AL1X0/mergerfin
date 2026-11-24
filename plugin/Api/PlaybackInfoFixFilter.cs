@@ -220,6 +220,12 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
     {
         if (remote != null)
         {
+            if (!string.IsNullOrWhiteSpace(remote.Label) &&
+                (string.IsNullOrWhiteSpace(ms.Name) || !ms.Name.StartsWith("[", StringComparison.Ordinal)))
+            {
+                ms.Name = remote.Label;
+            }
+
             if ((ms.Size == null || ms.Size < 4096) && remote.Size > 0)
             {
                 ms.Size = remote.Size;

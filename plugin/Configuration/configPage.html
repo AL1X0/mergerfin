@@ -171,6 +171,24 @@
             <span>Sync local playback, played &amp; favorite state back to remote servers (auto-matched by username via API Key)</span>
           </label>
         </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label class="emby-checkbox-label">
+            <input id="mfTagWithServerName" type="checkbox" is="emby-checkbox" />
+            <span>Tag movies &amp; series with their source server name(s) in Jellyfin Tags</span>
+          </label>
+        </div>
+        <div class="mf-grid-2" style="margin-top:8px;">
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfServerTagPrefix">Server Tag Prefix (optional)</label>
+            <input id="mfServerTagPrefix" type="text" is="emby-input" placeholder="Source: " />
+            <div class="fieldDescription">e.g. "Source: " produces "Source: BelkaFlix". Leave blank to use the server name directly.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="mfLocalServerTag">Local Media Tag (optional)</label>
+            <input id="mfLocalServerTag" type="text" is="emby-input" placeholder="Local" />
+            <div class="fieldDescription">Optional tag for movies/series also stored locally (e.g. "Local"). Leave blank to only tag remote servers.</div>
+          </div>
+        </div>
         <div class="mf-actions">
           <button type="submit" is="emby-button" class="raised button-submit">
             <span>Save General Settings</span>
@@ -436,6 +454,9 @@
           page.querySelector('#mfEnableMultiVersion').checked = currentConfig.EnableMultiVersionInjection !== false;
           page.querySelector('#mfSkipLocalDuplicates').checked = currentConfig.SkipLocalDuplicatesInStrm !== false;
           page.querySelector('#mfSyncWatchState').checked = currentConfig.SyncWatchStateToUpstreams !== false;
+          page.querySelector('#mfTagWithServerName').checked = currentConfig.TagItemsWithServerName !== false;
+          page.querySelector('#mfServerTagPrefix').value = currentConfig.ServerTagPrefix != null ? currentConfig.ServerTagPrefix : 'Source: ';
+          page.querySelector('#mfLocalServerTag').value = currentConfig.LocalServerTag || '';
 
           resetSrvForm(page);
           renderServers(page);
@@ -457,6 +478,9 @@
         currentConfig.EnableMultiVersionInjection = page.querySelector('#mfEnableMultiVersion').checked;
         currentConfig.SkipLocalDuplicatesInStrm = page.querySelector('#mfSkipLocalDuplicates').checked;
         currentConfig.SyncWatchStateToUpstreams = page.querySelector('#mfSyncWatchState').checked;
+        currentConfig.TagItemsWithServerName = page.querySelector('#mfTagWithServerName').checked;
+        currentConfig.ServerTagPrefix = page.querySelector('#mfServerTagPrefix').value;
+        currentConfig.LocalServerTag = page.querySelector('#mfLocalServerTag').value.trim();
         saveConfig();
       });
 
