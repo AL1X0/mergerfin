@@ -6,8 +6,8 @@
   "overview": "Unify multiple remote Jellyfin servers directly inside your existing Jellyfin server.",
   "owner": "AL1X0",
   "targetAbi": "12.4.0.0",
-  "timestamp": "2026-11-24T13:50:01Z",
-  "version": "0.1.16.0",
+  "timestamp": "2026-11-26T14:26:08Z",
+  "version": "0.1.17.0",
   "status": "Active",
   "autoUpdate": false,
   "assemblies": [

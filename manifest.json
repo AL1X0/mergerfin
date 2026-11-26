@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.1.17.0",
+        "changelog": "Fix remote subtitle sync: subtitles of remote sources are now served by the remote server (correct track and timeline, instant once cached, fixes missing subtitles on injected versions); fix wrong subtitle/audio track on injected versions (container-order stream indexes); faster playback start on remote versions; security: /MergerFin/Stream requires auth for outside callers and redirect mode no longer exposes the remote API key.",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/AL1X0/mergerfin/releases/download/plugin-v0.1.17/mergerfin_0.1.17.0.zip",
+        "checksum": "c7948486096db000871cdd050c26f467",
+        "timestamp": "2026-11-26T14:26:08Z"
+      },
+      {
         "version": "0.1.16.0",
         "changelog": "Make server origin immediately visible on every Movie and Series page across all Jellyfin clients (including jellyfin-web, which hides Jellyfin Tags on detail pages): inject the source server banner live into Taglines[0] right above the synopsis (e.g. 'Source: BelkaFlix') and inject server Tags live on item DTOs so library scans/metadata refreshes never hide them, plus improved tag sync logging.",
         "targetAbi": "12.4.0.0",

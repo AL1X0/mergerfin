@@ -41,7 +41,7 @@ public class UpstreamClient
     {
         if (id == null || (string.IsNullOrWhiteSpace(id.LocalUsername) && string.IsNullOrWhiteSpace(id.ClientName)))
         {
-            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.16\"";
+            const string baseHdr = "MediaBrowser Client=\"MergerFin Plugin\", Device=\"Jellyfin Host\", DeviceId=\"mergerfin-plugin\", Version=\"0.1.17\"";
             return string.IsNullOrEmpty(apiKey) ? baseHdr : $"{baseHdr}, Token=\"{Sanitize(apiKey, 256)}\"";
         }
 
@@ -54,7 +54,7 @@ public class UpstreamClient
             : (string.IsNullOrEmpty(device) ? "Jellyfin Host" : device);
 
         var devId = BuildDeviceId(user, id.DeviceId);
-        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.16\"";
+        var header = $"MediaBrowser Client=\"{client}\", Device=\"{displayDevice}\", DeviceId=\"{devId}\", Version=\"0.1.17\"";
         if (!string.IsNullOrEmpty(apiKey))
         {
             header += $", Token=\"{Sanitize(apiKey, 256)}\"";
