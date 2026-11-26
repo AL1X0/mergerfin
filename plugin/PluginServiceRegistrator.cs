@@ -19,6 +19,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<UpstreamClient>();
         serviceCollection.AddSingleton<RemoteCatalogStore>();
         serviceCollection.AddSingleton<CatalogSyncService>();
+        serviceCollection.AddSingleton<RemoteSubtitleProxy>();
         serviceCollection.AddSingleton<PlaybackInfoFixFilter>();
         serviceCollection.AddSingleton<IMediaSourceProvider, MergerFinMediaSourceProvider>();
         serviceCollection.AddHostedService<WatchStateSyncService>();

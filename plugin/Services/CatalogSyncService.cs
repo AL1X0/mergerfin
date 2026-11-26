@@ -962,32 +962,8 @@ public class CatalogSyncService
 
     internal static string? ResolveServerNameFromStrmPath(RemoteCatalogStore store, string? strmPath)
     {
-        if (string.IsNullOrWhiteSpace(strmPath) ||
-            !strmPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) ||
-            !File.Exists(strmPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var content = File.ReadAllText(strmPath).Trim();
-            const string marker = "/MergerFin/Stream/";
-            var idx = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            var tail = content[(idx + marker.Length)..];
-            var qIdx = tail.IndexOf('?');
-            var sourceId = (qIdx >= 0 ? tail[..qIdx] : tail).Trim();
-            return store.GetBySourceId(sourceId)?.ServerName;
-        }
-        catch
-        {
-            return null;
-        }
+        var sourceId = StrmSourceResolver.TryGetSourceId(strmPath);
+        return sourceId != null ? store.GetBySourceId(sourceId)?.ServerName : null;
     }
 
     private static string FormatServerTag(string prefix, string rawName)

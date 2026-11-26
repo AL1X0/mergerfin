@@ -143,6 +143,15 @@ public class MergerFinController : ControllerBase
             return;
         }
 
+        // This endpoint must stay anonymous for Jellyfin's own ffmpeg / HTTP media pipeline (it calls the
+        // .strm / mf_* loopback URL without credentials), but outside callers must be authenticated users.
+        var isLocalCaller = IsLocalCaller(HttpContext);
+        if (!isLocalCaller && User?.Identity?.IsAuthenticated != true)
+        {
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
         var src = _store.GetBySourceId(sourceId);
         if (src == null)
         {
@@ -181,7 +190,9 @@ public class MergerFinController : ControllerBase
             $"{baseUrl}/Videos/{Uri.EscapeDataString(src.RemoteItemId)}/stream" +
             $"?static=true&mediaSourceId={Uri.EscapeDataString(src.RemoteMediaSourceId)}&ApiKey={Uri.EscapeDataString(apiKey)}";
 
-        if (string.Equals(srv.StreamMode, "redirect", StringComparison.OrdinalIgnoreCase))
+        // The redirect target embeds the remote server's admin API key: only ever hand it to this Jellyfin
+        // server itself (which follows the redirect internally). Outside callers are always proxied.
+        if (isLocalCaller && string.Equals(srv.StreamMode, "redirect", StringComparison.OrdinalIgnoreCase))
         {
             Response.Redirect(targetUrl, permanent: false);
             return;
@@ -239,6 +250,35 @@ public class MergerFinController : ControllerBase
         {
             // Normal client disconnect during seek.
         }
+    }
+
+    private static bool IsLocalCaller(HttpContext ctx)
+    {
+        var remote = ctx.Connection.RemoteIpAddress;
+        if (remote == null)
+        {
+            // In-process calls (e.g. TestServer) have no remote endpoint.
+            return true;
+        }
+
+        if (remote.IsIPv4MappedToIPv6)
+        {
+            remote = remote.MapToIPv4();
+        }
+
+        if (System.Net.IPAddress.IsLoopback(remote))
+        {
+            return true;
+        }
+
+        // Same host calling itself on a non-loopback address (e.g. LocalBaseUrl = http://jellyfin:8096 in Docker).
+        var local = ctx.Connection.LocalIpAddress;
+        if (local != null && local.IsIPv4MappedToIPv6)
+        {
+            local = local.MapToIPv4();
+        }
+
+        return local != null && remote.Equals(local);
     }
 
     private (string? UserId, string Username) ResolveCallerUser()

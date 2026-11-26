@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -57,7 +56,7 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
         }
 
         // If this local item is itself a .strm file pointing to one of our sources, skip duplicating that exact source.
-        var existingStrmSourceId = ExtractStrmSourceId(item.Path);
+        var existingStrmSourceId = StrmSourceResolver.TryGetSourceId(item.Path);
         var localBase = (cfg.LocalBaseUrl ?? "http://127.0.0.1:8096").Trim().TrimEnd('/');
         var results = new List<MediaSourceInfo>(matches.Count);
 
@@ -69,7 +68,7 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
                 continue;
             }
 
-            var streams = BuildMediaStreams(src.Streams);
+            var streams = BuildMediaStreams(src);
 
             results.Add(new MediaSourceInfo
             {
@@ -88,6 +87,10 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
                 SupportsDirectStream = true,
                 SupportsTranscoding = true,
                 IsRemote = false,
+                // Metadata is already known from the catalog: cap ffmpeg's probe window on this HTTP input
+                // instead of the global -analyzeduration (200M in the official image), which can make
+                // ffmpeg pull hundreds of MB from the remote server before the first remux/transcode segment.
+                AnalyzeDurationMs = RemoteAnalyzeDurationMs,
                 MediaStreams = streams
             });
         }
@@ -95,14 +98,52 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
         return Task.FromResult<IEnumerable<MediaSourceInfo>>(results);
     }
 
-    public static List<MediaStream> BuildMediaStreams(IEnumerable<IndexedMediaStream> sourceStreams)
+    /// <summary>
+    /// ffmpeg probe window (ms) applied to remote MergerFin sources.
+    /// </summary>
+    public const int RemoteAnalyzeDurationMs = 5000;
+
+    /// <summary>
+    /// Returns the remote source's embedded (in-container) streams in container order.
+    /// Remote Jellyfin numbers external subtitles FIRST, which shifts every embedded stream's Index;
+    /// position in this list is the real container (ffprobe) index.
+    /// </summary>
+    public static List<IndexedMediaStream> GetEmbeddedStreams(IndexedRemoteSource src)
     {
-        return sourceStreams
+        return src.Streams
             .Where(st => !st.IsExternal)
-            .Select(st => new MediaStream
+            .OrderBy(st => st.Index)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Maps a container-order embedded stream position to the remote server's own stream Index.
+    /// </summary>
+    public static int? MapEmbeddedPositionToRemoteIndex(IndexedRemoteSource src, int position, string expectedType)
+    {
+        var embedded = GetEmbeddedStreams(src);
+        if (position < 0 || position >= embedded.Count)
+        {
+            return null;
+        }
+
+        var st = embedded[position];
+        return string.Equals(st.Type, expectedType, StringComparison.OrdinalIgnoreCase) ? st.Index : null;
+    }
+
+    /// <summary>
+    /// Builds client-facing MediaStreams for a remote source. Embedded streams are renumbered to their
+    /// container order (0..n-1), exactly like Jellyfin numbers a locally probed file, so clients that map
+    /// Index to the in-container track (ExoPlayer/AVPlayer/mpv based direct play) pick the right subtitle
+    /// and audio track. Subtitle requests are translated back to remote indexes by RemoteSubtitleProxy.
+    /// </summary>
+    public static List<MediaStream> BuildMediaStreams(IndexedRemoteSource src)
+    {
+        return GetEmbeddedStreams(src)
+            .Select((st, position) => new MediaStream
             {
                 Type = ParseStreamType(st.Type),
-                Index = st.Index,
+                Index = position,
                 Codec = string.IsNullOrWhiteSpace(st.Codec) ? null : st.Codec,
                 CodecTag = st.CodecTag,
                 Language = string.IsNullOrWhiteSpace(st.Language) ? null : st.Language,
@@ -180,38 +221,6 @@ public class MergerFinMediaSourceProvider : IMediaSourceProvider
     public Task<ILiveStream> OpenMediaSource(string openToken, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)
     {
         throw new NotSupportedException("MergerFin HTTP media sources do not require live stream opening.");
-    }
-
-    private static string? ExtractStrmSourceId(string? itemPath)
-    {
-        if (string.IsNullOrWhiteSpace(itemPath) || !itemPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        try
-        {
-            if (!File.Exists(itemPath))
-            {
-                return null;
-            }
-
-            var content = File.ReadAllText(itemPath).Trim();
-            const string marker = "/MergerFin/Stream/";
-            var idx = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0)
-            {
-                return null;
-            }
-
-            var tail = content[(idx + marker.Length)..];
-            var qIdx = tail.IndexOf('?');
-            return qIdx >= 0 ? tail[..qIdx] : tail;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static MediaStreamType ParseStreamType(string type)

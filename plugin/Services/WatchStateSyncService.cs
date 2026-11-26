@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -311,6 +310,16 @@ public class WatchStateSyncService : IHostedService, IDisposable
     private void ReapStaleSessions(object? state)
     {
         var now = DateTime.UtcNow;
+
+        // Bound the user-data dedup map (it previously grew forever, one entry per item/user/toggle).
+        foreach (var kv in _recentUserData.ToArray())
+        {
+            if (now - kv.Value > UserDataCooldown)
+            {
+                _recentUserData.TryRemove(kv.Key, out _);
+            }
+        }
+
         foreach (var kv in _activeSessions.ToArray())
         {
             if (now - kv.Value.LastActivityUtc > StaleSessionTimeout)
@@ -401,35 +410,8 @@ public class WatchStateSyncService : IHostedService, IDisposable
             }
         }
 
-        var itemPath = e.Item?.Path;
-        if (!string.IsNullOrWhiteSpace(itemPath) &&
-            itemPath.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(itemPath))
-        {
-            try
-            {
-                var content = File.ReadAllText(itemPath).Trim();
-                const string marker = "/MergerFin/Stream/";
-                var idx = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
-                {
-                    var tail = content[(idx + marker.Length)..];
-                    var qIdx = tail.IndexOf('?');
-                    var sourceId = qIdx >= 0 ? tail[..qIdx] : tail;
-                    var src = _store.GetBySourceId(sourceId);
-                    if (src != null)
-                    {
-                        return src;
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore read errors on .strm
-            }
-        }
-
-        return null;
+        var sourceId = StrmSourceResolver.TryGetSourceId(e.Item?.Path);
+        return sourceId != null ? _store.GetBySourceId(sourceId) : null;
     }
 
     private async Task PropagateUserDataAsync(UserDataSaveEventArgs e)

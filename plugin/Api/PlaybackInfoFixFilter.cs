@@ -50,15 +50,28 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
 
     private readonly RemoteCatalogStore _store;
     private readonly ILibraryManager _libraryManager;
+    private readonly RemoteSubtitleProxy _subtitleProxy;
 
-    public PlaybackInfoFixFilter(RemoteCatalogStore store, ILibraryManager libraryManager)
+    public PlaybackInfoFixFilter(RemoteCatalogStore store, ILibraryManager libraryManager, RemoteSubtitleProxy subtitleProxy)
     {
         _store = store;
         _libraryManager = libraryManager;
+        _subtitleProxy = subtitleProxy;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
+        // Subtitles of remote sources are served by the remote server that owns the file (exact timeline,
+        // correct track, no full-file download through local ffmpeg). Falls through on any failure.
+        var subtitleResult = await _subtitleProxy
+            .TryProxyAsync(context.HttpContext.Request, context.HttpContext.RequestAborted)
+            .ConfigureAwait(false);
+        if (subtitleResult != null)
+        {
+            context.Result = subtitleResult;
+            return;
+        }
+
         var path = context.HttpContext.Request.Path.Value;
         if (!string.IsNullOrEmpty(path) &&
             path.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase))
@@ -388,7 +401,7 @@ public class PlaybackInfoFixFilter : IAsyncActionFilter, IAsyncResultFilter
 
             if ((ms.MediaStreams == null || ms.MediaStreams.Count == 0) && remote.Streams.Count > 0)
             {
-                var streams = MergerFinMediaSourceProvider.BuildMediaStreams(remote.Streams);
+                var streams = MergerFinMediaSourceProvider.BuildMediaStreams(remote);
                 ms.MediaStreams = streams;
 
                 if (ms.DefaultAudioStreamIndex == null)
